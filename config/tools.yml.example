@@ -1,16 +1,42 @@
-# config/tools.yml — per-tool / per-plugin-tool toggles
+# config/tools.yml: per-tool toggles, call type and scheduling
 #
 # This file is auto-managed. On startup ProjectGabriel walks the live
 # tool registry and adds any newly discovered tool here, defaulting it
-# to `true`. Existing values are never overwritten, so flipping anything
-# off here will stick across upgrades.
+# to enabled. Your existing values are never overwritten, so anything
+# you change in here sticks across upgrades.
 #
 # Schema:
 #   tools:                 # built-in tools shipped with the host
 #     <tool_name>: bool
+#     <tool_name>:
+#       enabled: bool
+#       type: auto | blocking | non_blocking
+#       scheduling: when_idle | interrupt | silent
 #   plugin_tools:          # tools added by modular plugins, grouped per plugin
 #     <plugin_name>:
 #       <tool_name>: bool
+#
+# The short `tool: true/false` form still works and means the same as
+# `tool: {enabled: true}`. Use the long form when you want to set a type.
+#
+# ── type ── when the model has to wait for a tool result
+#   auto          default. leaves the decision to the model, which means
+#                 blocking on 2.5 and 3.1 models, and non-blocking on 3.8.
+#   blocking      the model pauses and waits for the result. Predictable
+#                 ordering, but the conversation stalls while the tool runs.
+#   non_blocking  the tool runs in the background while the model keeps
+#                 talking. Required by gemini-3.8-live-extended-thinking,
+#                 which rejects blocking function calls outright.
+#
+# ── scheduling ── only used for non-blocking tools
+#   when_idle     default. model finishes what it is saying, then brings
+#                 the result up.
+#   interrupt     model cuts itself off to report the result straight away.
+#   silent        model never mentions it, just knows it for later.
+#
+# Settings the current model cannot honor are dropped automatically and
+# the reason is printed in the console on startup, so a wrong pick here
+# never breaks a session.
 #
 # Note: whether a plugin itself is loaded is controlled by the
 # `enabled:` field inside that plugin's own plugins/<name>/plugin.yml,
@@ -20,12 +46,16 @@
 # next to the plugin code itself, while the per-tool toggles live here
 # alongside everything else the operator can flip.
 #
-# Example:
+# Examples:
 #   tools:
-#     vrchatJump: false      # disables a single built-in tool
+#     vrchatJump: false                 # turn a tool off
+#     playMusic:
+#       enabled: true
+#       type: non_blocking              # start it, keep talking
+#       scheduling: silent              # then never bring it up
 #   plugin_tools:
 #     example_plugin:
-#       someTool: false      # plugin still loads, but this tool is hidden
+#       someTool: false                 # plugin still loads, tool hidden
 
 tools: {}
 plugin_tools: {}

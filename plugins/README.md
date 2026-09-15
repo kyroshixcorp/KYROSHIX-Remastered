@@ -496,7 +496,7 @@ There are three layers:
    `plugins/<name>/plugin.yml`. This is the "should this plugin load
    at all" flag. If `false` the plugin is never imported and none of
    its tools register.
-3. **Per-tool toggles** -- `config/tools.yml` under
+3. **Per-tool settings** -- `config/tools.yml` under
    `plugin_tools.<plugin>.<tool_name>`. Auto-populated on every
    startup by `src/tools_sync.py`. Set a tool to `false` and its
    `FunctionDeclaration` is filtered out of the schema sent to gemini
@@ -540,8 +540,9 @@ usable for paranoid users.
 Every startup the host walks the live `@register_tool` registry plus
 every plugin's registered tools and writes any newly discovered name
 into `config/tools.yml`, defaulting to `true`. Existing values are
-never overwritten so anything you flip off stays off across upgrades.
-The schema is:
+never overwritten so anything you change stays put across upgrades.
+
+The short form is a plain bool:
 
 ```yaml
 tools:                 # built-in tools shipped with the host
@@ -550,6 +551,34 @@ plugin_tools:          # tools added by modular plugins, grouped per plugin
   <plugin_name>:
     <tool_name>: bool
 ```
+
+The long form adds the call type and, for non-blocking tools, what the
+model should do with the result when it lands:
+
+```yaml
+tools:
+  <tool_name>:
+    enabled: bool
+    type: auto | blocking | non_blocking
+    scheduling: when_idle | interrupt | silent
+```
+
+Plugin tools take the same shape under `plugin_tools.<plugin>`.
+
+- `type: auto` is the default and defers to the model. `blocking`
+  makes the model pause until the tool returns. `non_blocking` lets
+  the tool run in the background while the conversation continues,
+  which is what slow tools (rendering, network calls) want.
+- `scheduling` only applies to non-blocking calls. `when_idle` waits
+  for the model to finish its sentence, `interrupt` makes it report
+  the result immediately, `silent` means it never brings it up.
+- Settings the connected model cannot honor are dropped and the reason
+  is logged on startup, so a plugin never has to care which model is
+  running.
+
+Plugins do not set any of this themselves. It is all operator config,
+so a user can make a plugin's slow tool non-blocking without touching
+plugin code.
 
 Disabled tools are filtered out of the gemini schema AND skipped at
 handler instantiation time, so they cost zero memory and the model

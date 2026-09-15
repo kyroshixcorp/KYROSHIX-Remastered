@@ -14,7 +14,7 @@ import re
 from google.genai import types
 
 from src.emotions import generate_emotion_function_declarations
-from src.tools._base import get_registered_tools
+from src.tools._base import apply_tool_behaviors, get_registered_tools
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +126,7 @@ def _collect_flat(config):
             ))
     if config and hasattr(config, "is_tool_enabled"):
         decls = [d for d in decls if config.is_tool_enabled(d.name)]
-    return decls
+    return apply_tool_behaviors(decls, config)
 
 
 def _meta_function_declarations():
@@ -178,7 +178,8 @@ def build_meta_declarations(config):
     tools + the hot core, wrapped the same way get_tool_declarations does."""
     flat = _collect_flat(config)
     core = [d for d in flat if d.name in CORE_TOOL_NAMES]
-    fn_decls = _meta_function_declarations() + core
+    meta = apply_tool_behaviors(_meta_function_declarations(), config)
+    fn_decls = meta + core
     tools = []
     if config and config.google_search_enabled:
         tools.append(types.Tool(google_search=types.GoogleSearch()))

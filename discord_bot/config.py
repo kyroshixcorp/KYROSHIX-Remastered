@@ -206,6 +206,13 @@ class BotConfig:
         """True when text must go out via send_realtime_input, not send_client_content."""
         return self.model_capabilities.text_input == "realtime"
 
+    def behavior_for_tool(self, name):
+        """FunctionDeclaration.behavior for a bot tool. No tools.yml here, so
+        every tool is auto and just follows whatever the model needs."""
+        from src.model_caps import resolve_tool_behavior
+        behavior, _reason = resolve_tool_behavior(self.model_capabilities, "auto")
+        return behavior
+
     @property
     def is_31_model(self):
         # legacy alias kept so older call sites dont break

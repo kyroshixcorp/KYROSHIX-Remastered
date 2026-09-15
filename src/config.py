@@ -3,9 +3,27 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from src.model_caps import check_alpha_features, resolve_model, resolve_thinking
+from src.model_caps import (
+    TOOL_SCHEDULING,
+    TOOL_TYPE_DEFAULT,
+    TOOL_TYPES,
+    CompatNote,
+    check_alpha_features,
+    resolve_model,
+    resolve_thinking,
+    resolve_tool_behavior,
+    resolve_tool_scheduling,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _summarise(names, limit=4):
+    # keep compat notes to one readable line when a model has loads of tools
+    names = sorted(names)
+    if len(names) <= limit:
+        return ", ".join(names)
+    return ", ".join(names[:limit]) + f", and {len(names) - limit} more"
 
 PROMPTS_DIR = Path("config/prompts")
 
@@ -64,18 +82,163 @@ class Config:
         """Reread tools.yml. Call after src.tools_sync.sync_tools_yml() so
         any newly written entries are visible to is_tool_enabled."""
         self._tools_cfg = self._load_tools_cfg()
+        self._tool_entry_cache = {}
 
     def is_tool_enabled(self, name: str) -> bool:
-        # Check the built-in section first, then walk every plugin's
-        # sub block. Anything not listed defaults to enabled, otherwise
-        # an upgrade that adds a new tool would silently disable it.
+        return self._tool_settings(name)["enabled"]
+
+    def _raw_tool_entry(self, name: str):
+        # returns whatever tools.yml holds for this tool: bool, dict, or None. cached, its hot.
+        cache = getattr(self, "_tool_entry_cache", None)
+        if cache is None:
+            cache = {}
+            self._tool_entry_cache = cache
+        if name in cache:
+            return cache[name]
+
+        found = None
         tools_map = self._tools_cfg.get("tools", {}) or {}
         if name in tools_map:
-            return bool(tools_map[name])
+            found = tools_map[name]
+        else:
+            for _pname, sub in (self._tools_cfg.get("plugin_tools", {}) or {}).items():
+                if isinstance(sub, dict) and name in sub:
+                    found = sub[name]
+                    break
+        cache[name] = found
+        return found
+
+    def _tool_settings(self, name: str) -> dict:
+        """Normalised per-tool settings. takes both the bool shorthand and the long form."""
+        raw = self._raw_tool_entry(name)
+        if raw is None:
+            # unlisted defaults to on so an upgrade never silently drops a tool
+            return {"enabled": True, "type": TOOL_TYPE_DEFAULT, "scheduling": None}
+        if isinstance(raw, dict):
+            return {
+                "enabled": bool(raw.get("enabled", True)),
+                "type": str(raw.get("type") or TOOL_TYPE_DEFAULT).strip().lower(),
+                "scheduling": raw.get("scheduling"),
+            }
+        return {"enabled": bool(raw), "type": TOOL_TYPE_DEFAULT, "scheduling": None}
+
+    def tool_type(self, name: str) -> str:
+        return self._tool_settings(name)["type"]
+
+    def tool_scheduling(self, name: str):
+        return self._tool_settings(name)["scheduling"]
+
+    def behavior_for_tool(self, name: str):
+        """FunctionDeclaration.behavior value for this tool, or None to leave alone."""
+        behavior, _reason = resolve_tool_behavior(self.model_capabilities, self.tool_type(name))
+        return behavior
+
+    def scheduling_for_tool(self, name: str):
+        """FunctionResponse.scheduling value for this tool, or None for no hint."""
+        behavior = self.behavior_for_tool(name)
+        scheduling, _reason = resolve_tool_scheduling(
+            self.model_capabilities, self.tool_scheduling(name), behavior
+        )
+        return scheduling
+
+    def tool_compat_notes(self):
+        """Explain any tools.yml setting the current model cannot honor, grouped per problem."""
+        caps = self.model_capabilities
+        invalid_types = {}
+        invalid_sched = {}
+
+        for name in self._configured_tool_names():
+            settings = self._tool_settings(name)
+            if not settings["enabled"]:
+                # dont nag about settings on a tool the model cant even see
+                continue
+            cfg = settings
+            _behavior, reason = resolve_tool_behavior(caps, cfg["type"])
+            if reason and reason.startswith("'"):
+                invalid_types.setdefault(str(cfg["type"]), []).append(name)
+                continue
+            _sched, sreason = resolve_tool_scheduling(caps, cfg["scheduling"], _behavior)
+            if sreason and sreason.startswith("'"):
+                invalid_sched.setdefault(str(cfg["scheduling"]), []).append(name)
+
+        notes = []
+        buckets = self._bucket_tool_names(caps)
+        if buckets["non_blocking_unsupported"]:
+            names = buckets["non_blocking_unsupported"]
+            notes.append(CompatNote(
+                "tool type",
+                f"{len(names)} tool(s) are set to non_blocking but {caps.name} only "
+                f"supports blocking function calls, running them blocking "
+                f"({_summarise(names)})",
+            ))
+        if buckets["forced_async"]:
+            names = buckets["forced_async"]
+            notes.append(CompatNote(
+                "tool type",
+                f"{len(names)} tool(s) are set to blocking but {caps.name} rejects "
+                f"blocking function calls outright, running them non_blocking "
+                f"({_summarise(names)})",
+            ))
+        if buckets["not_async"]:
+            names = buckets["not_async"]
+            notes.append(CompatNote(
+                "tool scheduling",
+                f"{len(names)} tool(s) set a scheduling but run synchronously, so it is "
+                f"ignored ({_summarise(names)})",
+            ))
+        if buckets["no_scheduling"]:
+            names = buckets["no_scheduling"]
+            notes.append(CompatNote(
+                "tool scheduling",
+                f"{caps.name} does not support function scheduling, ignoring it for "
+                f"{len(names)} tool(s) ({_summarise(names)})",
+            ))
+        for bad, names in invalid_types.items():
+            notes.append(CompatNote(
+                "tool type",
+                f"'{bad}' is not a valid type, expected one of "
+                f"{', '.join(TOOL_TYPES)} ({_summarise(names)})",
+            ))
+        for bad, names in invalid_sched.items():
+            notes.append(CompatNote(
+                "tool scheduling",
+                f"'{bad}' is not a valid scheduling, expected one of "
+                f"{', '.join(TOOL_SCHEDULING)} ({_summarise(names)})",
+            ))
+        return notes
+
+    def _configured_tool_names(self):
+        names = set((self._tools_cfg.get("tools", {}) or {}).keys())
         for _pname, sub in (self._tools_cfg.get("plugin_tools", {}) or {}).items():
-            if isinstance(sub, dict) and name in sub:
-                return bool(sub[name])
-        return True
+            if isinstance(sub, dict):
+                names.update(sub.keys())
+        return names
+
+    def _bucket_tool_names(self, caps):
+        # sort every configured tool into the reason bucket it belongs in
+        buckets = {
+            "non_blocking_unsupported": [],
+            "forced_async": [],
+            "not_async": [],
+            "no_scheduling": [],
+        }
+        for name in self._configured_tool_names():
+            cfg = self._tool_settings(name)
+            if not cfg["enabled"]:
+                continue
+            behavior, reason = resolve_tool_behavior(caps, cfg["type"])
+            if reason == "blocking_only":
+                buckets["non_blocking_unsupported"].append(name)
+                continue
+            if reason == "forced_async":
+                buckets["forced_async"].append(name)
+                continue
+            if reason and reason.startswith("'"):
+                continue
+            _sched, sreason = resolve_tool_scheduling(caps, cfg["scheduling"], behavior)
+            if sreason in ("not_async", "no_scheduling"):
+                buckets[sreason].append(name)
+        return buckets
 
     def _load_prompts(self) -> dict:
         prompts_file = PROMPTS_DIR / "prompts.yml"

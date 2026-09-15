@@ -36,40 +36,65 @@ logger = logging.getLogger(__name__)
 
 TOOLS_PATH = Path("config/tools.yml")
 
-HEADER_COMMENT = """\
-config/tools.yml -- per-tool / per-plugin-tool toggles
+# bump this when the header text changes so existing files get the new banner
+HEADER_VERSION = 3
+HEADER_MARKER = f"tools.yml-schema: {HEADER_VERSION}"
 
+HEADER_COMMENT = (
+    "config/tools.yml: per-tool toggles, call type and scheduling\n"
+    + HEADER_MARKER
+    + "\n\n"
+    + """\
 This file is auto-managed. On every startup ProjectGabriel walks the
 live tool registry and adds any newly discovered tool here, defaulting
-it to true. Existing values are never overwritten, so anything you flip
-off here stays off across upgrades.
+it to enabled. Your existing values are never overwritten, so anything
+you change in here sticks across upgrades.
 
 Schema:
   tools:                 # built-in tools shipped with the host
     <tool_name>: bool
+    <tool_name>:
+      enabled: bool
+      type: auto | blocking | non_blocking
+      scheduling: when_idle | interrupt | silent
   plugin_tools:          # tools added by modular plugins, grouped per plugin
     <plugin_name>:
       <tool_name>: bool
 
-How disabling works:
-  set a tool to `false` and its FunctionDeclaration is filtered out of
-  the schema sent to gemini on connect, so the model has no idea the
-  tool exists and cannot call it. The python handler still lives in
-  memory but is unreachable.
+The short `tool: true/false` form still works and is the same as
+`tool: {enabled: true}`. Use the long form when you want to set a type.
 
-Plugin on/off:
-  whether a plugin itself loads is controlled by `enabled:` inside that
-  plugin's own plugins/<name>/plugin.yml, NOT by anything here. The
-  toggles under plugin_tools.<plugin> only hide individual tools once
-  the plugin is loaded.
+type:                    # when the model has to wait for a tool result
+  auto         default. leaves the decision to the model, which is
+               blocking on older models and non-blocking on 3.8 models.
+  blocking     the model pauses and waits for the result. Predictable
+               ordering, but the conversation stalls while the tool runs.
+  non_blocking the tool runs in the background and the model keeps
+               talking. Required by gemini-3.8-live-extended-thinking,
+               which rejects blocking calls outright.
+
+scheduling:              # only used by non-blocking tools
+  when_idle    default. model finishes what it is saying, then mentions
+               the result.
+  interrupt    model cuts itself off to report the result straight away.
+  silent       model never mentions it, just knows it for later.
 
 Examples:
   tools:
-    vrchatJump: false        # disables a single built-in tool
+    vrchatJump: false                  # turn a tool off
+    playMusic:
+      enabled: true
+      type: non_blocking               # start it, keep talking
+      scheduling: silent               # then never bring it up
   plugin_tools:
     example_plugin:
-      someTool: false        # plugin still loads, but this tool is hidden
+      someTool: false                  # plugin still loads, tool hidden
+
+Settings a model cannot honor are dropped automatically and the reason
+is printed in the console on startup, so a wrong pick never breaks a
+session.
 """
+)
 
 
 class _PermissiveCfg:
@@ -90,6 +115,10 @@ class _PermissiveCfg:
     def __getattr__(self, _name):
         # bool-y truthy for any attribute lookup
         return True
+
+    def behavior_for_tool(self, _name):
+        # no real model to check against here, so leave the behavior unset
+        return None
 
 
 def _emotion_decl_names(real_config) -> Iterable[str]:
@@ -196,21 +225,20 @@ def sync_tools_yml(real_config=None) -> dict:
     # always rewrite if file missing, otherwise only if we actually added stuff
     file_missing = not TOOLS_PATH.exists()
 
-    # Stamp the header comment on if it isn't already there. ruamel uses
-    # the start comment as the file banner. We detect by checking the
-    # CommentToken on the top mapping.
+    # look for the schema marker, not just any comment, so old banners get replaced
     needs_header = True
     try:
         existing_comment = data.ca.comment if hasattr(data, "ca") else None
         if existing_comment and existing_comment[1]:
             for tok in existing_comment[1]:
-                if "auto-managed" in str(getattr(tok, "value", "")):
+                if HEADER_MARKER in str(getattr(tok, "value", "")):
                     needs_header = False
                     break
     except Exception:
         pass
     if needs_header and isinstance(data, CommentedMap):
         data.yaml_set_start_comment(HEADER_COMMENT)
+        logger.info(f"tools.yml header updated to schema {HEADER_VERSION}")
 
     if file_missing or added_tools or added_plugin_tools or needs_header:
         TOOLS_PATH.parent.mkdir(parents=True, exist_ok=True)

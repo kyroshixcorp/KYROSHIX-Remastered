@@ -21,7 +21,7 @@ from src.tools import social as social_tools  # noqa: F401
 from src.tools import web_search as web_search_tools  # noqa: F401
 
 # Import all tool modules to trigger @register_tool decorators
-from src.tools._base import get_registered_tools
+from src.tools._base import apply_tool_behaviors, get_registered_tools
 from src.tools._handler import ToolHandler  # noqa: F401
 
 
@@ -46,6 +46,9 @@ def get_tool_declarations(config=None):
     # filter individually disabled tools (config/tools.yml)
     if config and hasattr(config, "is_tool_enabled"):
         function_decls = [d for d in function_decls if config.is_tool_enabled(d.name)]
+
+    # tools.yml also decides blocking vs non_blocking per tool
+    apply_tool_behaviors(function_decls, config)
 
     tools = []
     if config and config.google_search_enabled:

@@ -90,6 +90,23 @@ class ToolHandler:
         return self.vrchat_api
 
     async def handle(self, function_call) -> types.FunctionResponse:
+        return self.apply_response_hints(await self._dispatch(function_call))
+
+    def apply_response_hints(self, response: types.FunctionResponse) -> types.FunctionResponse:
+        # scheduling hint for non-blocking tools, resolver drops it where unsupported
+        if response is None or self.config is None:
+            return response
+        if not hasattr(self.config, "scheduling_for_tool"):
+            return response
+        scheduling = self.config.scheduling_for_tool(getattr(response, "name", "") or "")
+        if scheduling:
+            try:
+                response.scheduling = types.FunctionResponseScheduling[scheduling]
+            except KeyError:
+                logger.warning(f"unknown scheduling '{scheduling}' for {response.name}, ignoring")
+        return response
+
+    async def _dispatch(self, function_call) -> types.FunctionResponse:
         name = function_call.name
         args = dict(function_call.args) if function_call.args else {}
 

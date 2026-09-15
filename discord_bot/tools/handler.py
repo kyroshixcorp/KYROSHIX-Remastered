@@ -2,7 +2,20 @@ import logging
 
 from google.genai import types
 
+from src.model_caps import resolve_tool_behavior, resolve_tool_scheduling
+from src.tools._base import apply_tool_behaviors
+
 logger = logging.getLogger(__name__)
+
+
+def scheduling_for(config, name):
+    # the bot has no tools.yml, so every tool counts as auto
+    caps = getattr(config, "model_capabilities", None)
+    if caps is None:
+        return None
+    behavior, _ = resolve_tool_behavior(caps, "auto")
+    scheduling, _ = resolve_tool_scheduling(caps, None, behavior)
+    return scheduling
 
 
 class DiscordToolHandler:
@@ -74,6 +87,7 @@ class DiscordToolHandler:
         decls = []
         for tool in self._tools:
             decls.extend(tool.declarations())
+        apply_tool_behaviors(decls, self.config)
         return [types.Tool(function_declarations=decls)]
 
     async def handle(self, function_call):
@@ -93,8 +107,16 @@ class DiscordToolHandler:
             logger.error(f"Discord tool {name} failed: {e}")
             result = {"result": "error", "message": str(e)}
 
-        return types.FunctionResponse(
+        response = types.FunctionResponse(
             id=function_call.id,
             name=name,
             response=result if result else {"result": "ok"},
         )
+        # same scheduling hint logic the main session uses
+        scheduling = scheduling_for(self.config, name)
+        if scheduling:
+            try:
+                response.scheduling = types.FunctionResponseScheduling[scheduling]
+            except KeyError:
+                logger.warning(f"unknown scheduling '{scheduling}' for {name}, ignoring")
+        return response

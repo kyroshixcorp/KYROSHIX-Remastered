@@ -1,5 +1,7 @@
 import logging
 
+from google.genai import types
+
 logger = logging.getLogger(__name__)
 
 _registry = []
@@ -12,6 +14,22 @@ def register_tool(cls):
 
 def get_registered_tools():
     return list(_registry)
+
+
+def apply_tool_behaviors(decls, config):
+    """Stamp FunctionDeclaration.behavior from tools.yml so operators can retune tools."""
+    if config is None or not hasattr(config, "behavior_for_tool"):
+        return decls
+    for decl in decls:
+        name = getattr(decl, "name", "") or ""
+        behavior = config.behavior_for_tool(name)
+        if not behavior:
+            continue
+        try:
+            decl.behavior = types.Behavior[behavior]
+        except KeyError:
+            logger.warning(f"unknown behavior '{behavior}' for {name}, ignoring")
+    return decls
 
 
 class BaseTool:

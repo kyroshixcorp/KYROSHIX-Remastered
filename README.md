@@ -126,7 +126,7 @@ Everything lives in `config.yml`. Key sections:
 | `gemini` &rarr; `model` | Which Gemini Live model to use |
 | `gemini` &rarr; `voice` | Prebuilt voice: Puck, Charon, Kore, Fenrir, Aoede, Leda, Orus, Zephyr |
 | `gemini` &rarr; `vad` &rarr; `mode` | Voice Activity Detection: `auto` (server-side) or `silero` (local) |
-| `gemini` &rarr; `thinking` | Thinking budget/config for the model's inner monologue |
+| `gemini` &rarr; `thinking` | How much the model reasons before it answers |
 | `vrchat` &rarr; `osc_ip`, `osc_send_port`, `osc_receive_port` | OSC IP and ports |
 | `vrchat_api` | VRChat account credentials for avatar switching, friends, etc |
 | `yolo` &rarr; `enabled` | Toggle person/face tracking |
@@ -134,6 +134,64 @@ Everything lives in `config.yml`. Key sections:
 | `plugins` | Plugin loader and trust settings |
 
 Prompt files live in `config/prompts/`. Personalities live in `config/prompts/personalities.yml`.
+
+### Models
+
+Any Gemini Live model works. Set `model` under the `gemini` section in `config.yml`.
+
+| Model | Notes |
+|:---|:---|
+| `gemini-3.8-live` | Fastest. Reasons on its own, no thinking settings needed. |
+| `gemini-3.8-live-extended-thinking` | Thinks harder in the background. Slower, better at multi-step problems. |
+| `gemini-3.1-flash-live-preview` | Previous generation. |
+| `gemini-2.5-flash-native-audio-preview-*` | Legacy models. |
+
+Older and newer models are all supported. Anything not recognised falls back to the closest generation based on the version number and says so in the console on startup.
+
+**Thinking settings fix themselves.** The `thinking` section has a token budget for 2.5 models and a level for 3.x models. Whichever one your model does not understand gets dropped automatically, and the reason is printed on startup. Picking the wrong one cannot break a session.
+
+### Tools (`config/tools.yml`)
+
+`config/tools.yml` controls what Gabriel can do. It is generated on first run and updated automatically as tools are added, so you never need to write it from scratch.
+
+Each tool can be a plain on/off switch:
+
+```yaml
+tools:
+  playMusic: false
+```
+
+Or the longer form, which also sets the call type:
+
+```yaml
+tools:
+  playMusic:
+    enabled: true
+    type: non_blocking
+    scheduling: silent
+```
+
+**`type`** is how the model waits for the tool:
+
+| Value | What happens |
+|:---|:---|
+| `auto` | Default. Lets the model decide, which means blocking on 2.5 and 3.1, and non-blocking on 3.8. |
+| `blocking` | The model pauses and waits for the result before saying anything else. Predictable ordering, but the conversation stalls while the tool runs. |
+| `non_blocking` | The tool runs in the background and the model keeps talking. Use this for anything slow. |
+
+`gemini-3.8-live-extended-thinking` rejects blocking function calls outright, so every tool is switched to non-blocking automatically on that model.
+
+**`scheduling`** only applies to non-blocking tools, and decides what the model does when the result arrives:
+
+| Value | What happens |
+|:---|:---|
+| `when_idle` | Default. Finishes what it is saying, then brings the result up. |
+| `interrupt` | Cuts itself off to report the result straight away. |
+| `silent` | Never mentions it, just knows it for later. Good for background tasks. |
+
+As with thinking, a model that cannot honor a setting simply ignores it and the reason appears in the console. Settings on a tool you have switched off are not reported at all.
+
+Plugins add their tools under `plugin_tools`, grouped by plugin name. Whether a plugin itself loads is controlled by its own `plugins/<name>/plugin.yml`, not by `tools.yml`.
 
 ---
 

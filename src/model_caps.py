@@ -79,6 +79,14 @@ _KNOWN_MODELS = {
 # canonical ordering, used to pick the nearest allowed level when one is rejected
 _LEVEL_ORDER = ("minimal", "low", "medium", "high")
 
+# per-tool function call types an operator can set in tools.yml
+TOOL_TYPES = ("auto", "blocking", "non_blocking")
+TOOL_TYPE_DEFAULT = "auto"
+
+# how the model should treat a result that arrives while it's busy
+TOOL_SCHEDULING = ("when_idle", "interrupt", "silent")
+TOOL_SCHEDULING_DEFAULT = "when_idle"
+
 
 @dataclass
 class CompatNote:
@@ -200,6 +208,60 @@ def resolve_thinking(
         kwargs["include_thoughts"] = True
 
     return (kwargs or None), notes
+
+
+def resolve_tool_behavior(caps: ModelCapabilities, requested: str = TOOL_TYPE_DEFAULT):
+    """Map a tools.yml type onto a behavior. None means leave the model default alone."""
+    want = (requested or TOOL_TYPE_DEFAULT).strip().lower().replace("-", "_")
+
+    if want not in TOOL_TYPES:
+        return None, f"'{requested}' is not a valid tool type"
+
+    # no async support at all, the model only does blocking calls
+    if caps.async_tools == "none":
+        if want == "non_blocking":
+            return None, "blocking_only"
+        return None, None
+
+    # async is mandatory here, blocking is a hard error
+    if caps.async_tools == "required":
+        if want == "blocking":
+            return "NON_BLOCKING", "forced_async"
+        return "NON_BLOCKING", None
+
+    # async available but optional, honor whatever was asked for
+    if want == "blocking":
+        return "BLOCKING", None
+    if want == "non_blocking":
+        return "NON_BLOCKING", None
+    return None, None
+
+
+def resolve_tool_scheduling(
+    caps: ModelCapabilities,
+    requested=None,
+    behavior: str = None,
+):
+    """Map a tools.yml scheduling onto a FunctionResponseScheduling name, dropping it when unusable."""
+    effective_async = behavior == "NON_BLOCKING" or (
+        behavior is None and caps.async_tools in ("optional", "required")
+    )
+
+    if requested is None or str(requested).strip() == "":
+        # auto-attach only when useful, else the result never gets mentioned
+        if effective_async and caps.tool_scheduling:
+            return TOOL_SCHEDULING_DEFAULT.upper(), None
+        return None, None
+
+    want = str(requested).strip().lower().replace("-", "_")
+    if want not in TOOL_SCHEDULING:
+        return None, f"'{requested}' is not a valid scheduling value"
+
+    if not caps.tool_scheduling:
+        return None, "no_scheduling"
+    if not effective_async:
+        return None, "not_async"
+    return want.upper(), None
 
 
 def check_alpha_features(

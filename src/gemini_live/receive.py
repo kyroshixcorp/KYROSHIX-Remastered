@@ -243,9 +243,11 @@ class ReceiveLoopMixin:
                                     logger.warning(f"Malformed tool call args for {fc.name}: {e}")
                                     _broadcast_console("error", f"Malformed tool call: {fc.name} ({e})")
                                     malformed = True
-                                    responses.append(types.FunctionResponse(
-                                        id=fc.id, name=fc.name,
-                                        response={"result": "error", "message": "malformed arguments, please retry"},
+                                    responses.append(self.tool_handler.apply_response_hints(
+                                        types.FunctionResponse(
+                                            id=fc.id, name=fc.name,
+                                            response={"result": "error", "message": "malformed arguments, please retry"},
+                                        )
                                     ))
                                     continue
                                 _broadcast_console("tool_call", f"{fc.name}({args_str})")

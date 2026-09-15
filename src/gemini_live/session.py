@@ -560,6 +560,9 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
                 logger.info(f"Model profile: {caps.family} ({describe_caps(caps)})")
                 if not self.config.google_search_enabled and caps.google_search is False:
                     logger.info("Google Search grounding off by default for this model (set google_search: true to force it on)")
+                if caps.async_tools != "none":
+                    logger.info(f"Function calls: {caps.async_tools} async support")
+                self._log_compat_notes(self.config.tool_compat_notes())
                 # Log VAD mode
                 if self.config.vad_mode == "silero":
                     logger.debug(f"Silero VAD enabled (threshold={self.config.vad_silero_threshold}, silence={self.config.vad_silence_duration_ms}ms)")
