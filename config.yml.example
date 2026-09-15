@@ -145,10 +145,12 @@ gemini:
   # proactivity: null                # Model proactivity level (float), null = default
 
   # ── Google Search Grounding ──
-  # Enable Google Search tool for the model to look up current information.
-  # Left unset the default depends on the model: on for 2.5 and 3.8, off for
-  # 3.1 where grounding burns a separate quota that free keys barely get.
-  # Set explicitly to override: true = always on, false = always off.
+  # Gemini's built-in web search. Off by default on every model because it has
+  # its own quota separate from the model quota, one free tier keys usually dont
+  # have any of. When it runs out you get a quota error that looks exactly like a
+  # dead API key, so it can burn through your whole key list for nothing.
+  # Leaving it off uses the app's own webSearch tool instead, which is free.
+  # Turn it on only if you know your key has grounding quota.
   # google_search: true
 
   # ── Context Window Compression ──

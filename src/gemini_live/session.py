@@ -528,6 +528,7 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
 
     async def run(self):
         self._alpha_fallback_failed = False
+        self._grounding_fallback_failed = False
         self._rate_limit_backoff = 0
         while True:
             # Capture previous conversation for context replay on error reconnects
@@ -562,6 +563,8 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
                 logger.info(f"Model profile: {caps.family} ({describe_caps(caps)})")
                 if not self.config.google_search_enabled and caps.google_search is False:
                     logger.info("Google Search grounding off by default for this model (set google_search: true to force it on)")
+                elif not self.config.google_search_enabled and self._grounding_fallback_failed:
+                    logger.info("Google Search grounding disabled for this session after a quota error")
                 if caps.async_tools != "none":
                     logger.info(f"Function calls: {caps.async_tools} async support")
                 self._log_compat_notes(self.config.tool_compat_notes())
@@ -737,6 +740,24 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
                         _broadcast_console("info", "Expired session handle causing rate limit, clearing")
                         self._clear_session_handle()
                         self._rate_limit_backoff = 0
+                        await asyncio.sleep(1)
+                        continue
+
+                    # grounding has its own quota and free keys usually have none. the 1011
+                    # looks identical to a dead key so try again without search before
+                    # rotating through the whole pool for nothing.
+                    if not self._grounding_fallback_failed and self.config.google_search_enabled:
+                        self._grounding_fallback_failed = True
+                        self.config.disable_search_grounding()
+                        logger.warning(
+                            "Quota error on connect with Google Search grounding on. "
+                            "Search grounding has its own quota which free tier keys often dont get, "
+                            "retrying without it (the app's own webSearch tool takes over)."
+                        )
+                        _broadcast_console(
+                            "info",
+                            "Search grounding quota unavailable, switched to the local web search tool"
+                        )
                         await asyncio.sleep(1)
                         continue
 

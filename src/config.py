@@ -51,6 +51,7 @@ class Config:
         if backup:
             self._keys.extend(backup)
         self._key_index = 0
+        self._grounding_disabled = False
         self._prompts = self._load_prompts()
         self._appends = self._load_appends()
         self._voices = self._load_voices()
@@ -645,8 +646,15 @@ class Config:
             proactivity=self.proactivity,
         )
 
+    def disable_search_grounding(self):
+        """Called when grounding 1011s. Drops the built-in search tool so the app's own
+        webSearch tool takes over, since that one doesnt touch the grounding quota."""
+        self._grounding_disabled = True
+
     @property
     def google_search_enabled(self):
+        if self._grounding_disabled:
+            return False
         val = self.get("gemini", "google_search")
         if val is None:
             return self.model_capabilities.google_search

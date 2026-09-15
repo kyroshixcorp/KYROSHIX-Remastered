@@ -18,7 +18,8 @@ class ModelCapabilities:
     text_input: str = "realtime"      # realtime (send_realtime_input) | client_content
     history_config: bool = True       # needs initial_history_in_client_content
     alpha_features: bool = False      # affective dialog + proactivity params
-    google_search: bool = True        # usable built-in search grounding
+    google_search: bool = False       # default for built-in search grounding
+
     vision_token_cap: bool = True     # shrink frames + slow the loop to save tokens
     async_tools: str = "optional"     # none | optional | required (required = blocking errors)
     tool_scheduling: bool = True      # SILENT/WHEN_IDLE/INTERRUPT on tool responses
@@ -30,6 +31,10 @@ class ModelCapabilities:
 
 
 # key = model name prefix, longest match wins so extended-thinking beats plain 3.8
+# NOTE: grounding is off for everything. it has its own quota separate from the model
+# quota, free tier keys effectively get none of it, and when it fails it 1011s with the
+# same message as a dead key so rotation burns the whole pool finding nothing. the app's
+# own webSearch tool covers search for free. set google_search: true in config.yml to opt in.
 _KNOWN_MODELS = {
     "gemini-2.5-flash-native-audio-preview": dict(
         family="2.5",
@@ -38,7 +43,7 @@ _KNOWN_MODELS = {
         text_input="client_content",
         history_config=False,
         alpha_features=True,
-        google_search=True,
+        google_search=False,
         vision_token_cap=False,
         async_tools="none",
         tool_scheduling=False,
@@ -48,7 +53,6 @@ _KNOWN_MODELS = {
         generation=3.1,
         thinking="level",
         thinking_levels=("minimal", "low", "medium", "high"),
-        # grounding works but burns a separate quota free keys barely get, so off by default
         google_search=False,
         async_tools="none",
         tool_scheduling=False,
@@ -58,7 +62,9 @@ _KNOWN_MODELS = {
         generation=3.8,
         thinking="level",
         thinking_levels=("low", "medium", "high"),
-        google_search=True,
+        # grounding has its own quota free keys effectively dont get, a 1011 here looks
+        # exactly like a dead key and burns the whole rotation pool
+        google_search=False,
         async_tools="required",
         tool_scheduling=False,
         turn_complete_is_idle=False,
@@ -69,7 +75,7 @@ _KNOWN_MODELS = {
         generation=3.8,
         # interleaved reasoning, always on, not configurable.
         thinking="none",
-        google_search=True,
+        google_search=False,
         async_tools="optional",
         proactive_audio_forced=True,
     ),
