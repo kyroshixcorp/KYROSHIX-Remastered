@@ -10,6 +10,7 @@ from google.genai import types
 from google.genai.errors import APIError
 
 from src.model_caps import interaction_is_idle
+from src.quota import is_rate_limit, quota_hint
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class GeminiTextSession:
         self._session_handle_created = None
         self._handle_fail_count = 0
         self._rate_limit_backoff = 0
+        self._keys_tried_since_success = 0  # keys burned since the last working connect
         self._connected = asyncio.Event()
         self._response_queue = asyncio.Queue()
         self._pending_responses = {}  # request_id -> asyncio.Future
@@ -459,6 +461,7 @@ class GeminiTextSession:
                 async with connection as session:
                     self._session = session
                     self._bad_response_streak = 0
+                    self._keys_tried_since_success = 0
                     self._pending_transcript = ""
                     self._awaiting_idle = False
                     if self._idle_flush_task and not self._idle_flush_task.done():
@@ -473,17 +476,22 @@ class GeminiTextSession:
                     await self._receive_task
             except APIError as e:
                 err_str = str(e)
-                if "429" in err_str.lower() or "quota" in err_str.lower():
+                if is_rate_limit(e):
+                    self._keys_tried_since_success += 1
+                    # one lap round the key ring, then back off. per project limits
+                    # mean a full lap with no luck isnt fixed by rotating further.
+                    if self._keys_tried_since_success >= self.config.key_count:
+                        hint = quota_hint(e)
+                        self._rate_limit_backoff = min(self._rate_limit_backoff + 1, 5)
+                        wait = 5 * (2 ** self._rate_limit_backoff)
+                        logger.error(f"Discord bot quota: all keys rejected. {hint}")
+                        self._keys_tried_since_success = 0
+                        await asyncio.sleep(wait)
+                        continue
                     old_key = self.config.api_key
                     new_key = self.config.rotate_key()
                     if new_key != old_key:
                         logger.warning("Discord bot: rate limited, switched API key")
-                        self._rate_limit_backoff = 0
-                    else:
-                        self._rate_limit_backoff = min(self._rate_limit_backoff + 1, 5)
-                        wait = 5 * (2 ** self._rate_limit_backoff)
-                        logger.warning(f"Discord bot: rate limited, waiting {wait}s")
-                        await asyncio.sleep(wait)
                     continue
                 if self._session_handle:
                     self._handle_fail_count += 1

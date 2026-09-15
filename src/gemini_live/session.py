@@ -19,6 +19,7 @@ from .vision import VisionLoopMixin
 from .receive import ReceiveLoopMixin
 from .leak_filter import strip_tool_call_leaks
 from src.model_caps import describe as describe_caps
+from src.quota import is_rate_limit, quota_hint
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
         self._connection_start_time = 0  # When the current session connected
         self._last_connect_succeeded = True  # Track if last connect attempt reached onopen
         self._rate_limit_backoff = 0
+        self._keys_tried_since_success = 0  # keys burned since the last working connect
         self._tool_call_pending = False
         self._audio_stream_active = False  # True when server knows we're streaming audio
         self._audio_gated = False  # True when we should suppress outbound audio (tool calls, model speaking)
@@ -593,6 +595,7 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
                     session = await _live_cm.__aenter__()
                 try:
                     self._last_connect_succeeded = True
+                    self._keys_tried_since_success = 0
                     logger.info("Connected to Gemini Live")
                     _broadcast_console("info", f"Connected to Gemini Live ({self.config.model})")
                     if not self._ready_badge_shown:
@@ -716,10 +719,9 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
 
             except APIError as e:
                 err_str = str(e)
-                err_lower = err_str.lower()
 
-                # Rate limiting - check expired handle first, then rotate key
-                if "429" in err_lower or "quota" in err_lower or "rate" in err_lower:
+                # old check matched "rate" anywhere incl inside "generated", so unrelated errors read as quota
+                if is_rate_limit(e):
                     logger.warning(f"Rate limit error details: {err_str[:200]}")
                     # Flush buffered transcript so last messages make it into replay context
                     if self._transcript_buffer.strip():
@@ -737,21 +739,32 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
                         self._rate_limit_backoff = 0
                         await asyncio.sleep(1)
                         continue
+
+                    # per project not per key, so a full lap with no luck means back off
+                    self._keys_tried_since_success += 1
+                    if self._keys_tried_since_success >= self.config.key_count:
+                        hint = quota_hint(e)
+                        self._rate_limit_backoff = min(self._rate_limit_backoff + 1, 5)
+                        wait = 5 * (2 ** self._rate_limit_backoff)
+                        logger.error(
+                            f"All {self.config.key_count} API key(s) rejected with a quota error: {hint}"
+                        )
+                        _broadcast_console("error", hint)
+                        self._notify_chatbox_error()
+                        logger.warning(f"Waiting {wait}s before trying the keys again")
+                        self._keys_tried_since_success = 0
+                        await asyncio.sleep(wait)
+                        continue
+
                     old_key = self.config.api_key
                     new_key = self.config.rotate_key()
                     if new_key != old_key:
                         logger.warning("Rate limited - switched API key")
                         _broadcast_console("info", "Rate limited - switched API key")
-                        self._rate_limit_backoff = 0
-                        # Handle is key-specific, can't resume on a different key
+                        # dont reset the backoff here, failed laps should keep growing it
                         if self._session_handle:
+                            # handles are key-specific, cant resume on a different key
                             self._clear_session_handle()
-                    else:
-                        self._rate_limit_backoff = min(self._rate_limit_backoff + 1, 5)
-                        wait = 5 * (2 ** self._rate_limit_backoff)  # 10, 20, 40, 80, 160, 160s
-                        logger.warning(f"Rate limited - waiting {wait}s before retry")
-                        _broadcast_console("info", f"Rate limited - waiting {wait}s")
-                        await asyncio.sleep(wait)
                     continue
 
                 # v1alpha features not supported - fall back

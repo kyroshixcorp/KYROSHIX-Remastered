@@ -452,6 +452,10 @@ class Config:
     def api_key(self):
         return self._keys[self._key_index]
 
+    @property
+    def key_count(self):
+        return len(self._keys)
+
     def rotate_key(self):
         old_idx = self._key_index
         self._key_index = (self._key_index + 1) % len(self._keys)
