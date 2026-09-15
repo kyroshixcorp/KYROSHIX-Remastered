@@ -3,6 +3,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from src.model_caps import check_alpha_features, resolve_model, resolve_thinking
+
 logger = logging.getLogger(__name__)
 
 PROMPTS_DIR = Path("config/prompts")
@@ -450,28 +452,68 @@ class Config:
         return self.get("gemini", "dynamic_tools", default=False)
 
     @property
+    def model_capabilities(self):
+        """What the configured Live model actually accepts. See src/model_caps.py."""
+        return resolve_model(self.model)
+
+    def resolve_thinking_config(self):
+        """(ThinkingConfig kwargs or None, CompatNote list) for the current model.
+
+        Applies the user's thinking settings to whatever this model supports,
+        dropping or nudging anything it would reject instead of erroring out.
+        """
+        return resolve_thinking(
+            self.model_capabilities,
+            enabled=self.thinking_enabled,
+            budget=self.thinking_budget,
+            level=self.thinking_level,
+            include_thoughts=self.thinking_include_thoughts,
+        )
+
+    def alpha_feature_notes(self):
+        """CompatNote list for affective dialog / proactivity on this model."""
+        return check_alpha_features(
+            self.model_capabilities,
+            affective_dialog=self.enable_affective_dialog,
+            proactivity=self.proactivity,
+        )
+
+    @property
     def google_search_enabled(self):
         val = self.get("gemini", "google_search")
         if val is None:
-            return not self.is_31_model
-        return val
+            return self.model_capabilities.google_search
+        return bool(val)
+
+    @property
+    def thinking_enabled(self):
+        return bool(self.get("gemini", "thinking", "enabled", default=True))
 
     @property
     def thinking_budget(self):
+        # 2.5 models only. token count, higher = more reasoning. ignored on 3.x.
         return self.get("gemini", "thinking", "budget")
 
     @property
     def thinking_level(self):
+        # 3.x models only. minimal/low/medium/high, though 3.8 extended thinking
+        # rejects minimal and gets nudged up to low automatically.
         return self.get("gemini", "thinking", "level")
 
     @property
     def thinking_include_thoughts(self):
-        return self.get("gemini", "thinking", "include_thoughts", default=False)
+        return bool(self.get("gemini", "thinking", "include_thoughts", default=False))
+
+    @property
+    def uses_realtime_text(self):
+        """True when text must go out via send_realtime_input, not send_client_content."""
+        return self.model_capabilities.text_input == "realtime"
 
     @property
     def is_31_model(self):
-        """Check if current model is a Gemini 3.1 Live model."""
-        return "3.1" in self.model and "live" in self.model.lower()
+        # legacy alias kept so plugins and older call sites dont break.
+        # true means "new gen live model": realtime text input, no alpha features.
+        return self.uses_realtime_text
 
     @property
     def session_error_threshold(self):
@@ -654,11 +696,11 @@ class Config:
 
     @property
     def vision_media_resolution(self):
-        """Media resolution for Live API vision. Auto-defaults to LOW for 3.1 models to save tokens."""
+        """Media resolution for Live API vision. Auto-defaults to LOW on token hungry models."""
         val = self.get("vision", "media_resolution")
         if val is not None:
             return val
-        return "low" if self.is_31_model else None
+        return "low" if self.model_capabilities.vision_token_cap else None
 
     @property
     def vision_pause_on_output(self):

@@ -2,8 +2,8 @@
 
 Grabs the configured monitor with mss, downscales + JPEG-encodes via PIL,
 and drops the frames into the same realtime out queue the audio loop uses.
-Honors the various vision_* config knobs (interval, idle slowdown, pause
-on output, max size, quality) and auto-tunes for 3.1 models.
+Honors the vision_* config knobs and auto-tunes size/quality/interval on
+models where frames cost more, per src/model_caps.py.
 """
 
 import asyncio
@@ -26,17 +26,17 @@ class VisionLoopMixin:
                 monitor = sct.monitors[monitor_idx]
                 screenshot = sct.grab(monitor)
                 img = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
+                caps = self.config.model_capabilities
                 max_size = self.config.vision_max_size
-                # Use smaller resolution for 3.1 models to save tokens
-                if self.config.is_31_model and max_size > 768:
-                    max_size = 768
+                # newer models burn more tokens per frame, so cap the size and quality
+                if caps.vision_token_cap:
+                    max_size = min(max_size, caps.vision_max_size)
                 if img.width > max_size or img.height > max_size:
                     img.thumbnail([max_size, max_size])
                 buffer = io.BytesIO()
                 quality = self.config.vision_quality
-                # Use lower JPEG quality for 3.1 models (smaller payload)
-                if self.config.is_31_model and quality > 60:
-                    quality = 60
+                if caps.vision_token_cap:
+                    quality = min(quality, caps.vision_quality)
                 img.save(buffer, format="JPEG", quality=quality)
                 buffer.seek(0)
                 return buffer.read()
@@ -53,10 +53,11 @@ class VisionLoopMixin:
             monitor = sct.monitors[monitor_idx]
             logger.debug(f"Capturing monitor {monitor_idx}: {monitor['width']}x{monitor['height']}")
         interval = self.config.vision_interval
-        # Auto-increase interval for 3.1 models if user hasn't set a higher value
-        if self.config.is_31_model and interval < 2.0:
-            interval = 2.0
-            logger.info(f"Vision interval increased to {interval}s for 3.1 model (token optimization)")
+        # newer models cost more per frame, so slow the loop down unless the user asked for faster
+        caps = self.config.model_capabilities
+        if caps.vision_token_cap and interval < caps.vision_min_interval:
+            interval = caps.vision_min_interval
+            logger.info(f"Vision interval increased to {interval}s for {caps.family} models (token optimization)")
         pause_on_output = self.config.vision_pause_on_output
         pause_on_idle = self.config.vision_pause_on_idle
         idle_interval = self.config.vision_idle_interval

@@ -169,6 +169,27 @@ class BotConfig:
         return self.get("gemini", "max_output_tokens")
 
     @property
+    def model_capabilities(self):
+        """What the configured Live model actually accepts. See src/model_caps.py."""
+        from src.model_caps import resolve_model
+        return resolve_model(self.model)
+
+    def resolve_thinking_config(self):
+        """(ThinkingConfig kwargs or None, CompatNote list) for the current model."""
+        from src.model_caps import resolve_thinking
+        return resolve_thinking(
+            self.model_capabilities,
+            enabled=self.thinking_enabled,
+            budget=self.thinking_budget,
+            level=self.thinking_level,
+            include_thoughts=self.thinking_include_thoughts,
+        )
+
+    @property
+    def thinking_enabled(self):
+        return bool(self.get("gemini", "thinking", "enabled", default=True))
+
+    @property
     def thinking_budget(self):
         return self.get("gemini", "thinking", "budget")
 
@@ -178,12 +199,17 @@ class BotConfig:
 
     @property
     def thinking_include_thoughts(self):
-        return self.get("gemini", "thinking", "include_thoughts", default=False)
+        return bool(self.get("gemini", "thinking", "include_thoughts", default=False))
+
+    @property
+    def uses_realtime_text(self):
+        """True when text must go out via send_realtime_input, not send_client_content."""
+        return self.model_capabilities.text_input == "realtime"
 
     @property
     def is_31_model(self):
-        """Check if current model is a Gemini 3.1 Live model."""
-        return "3.1" in self.model and "live" in self.model.lower()
+        # legacy alias kept so older call sites dont break
+        return self.uses_realtime_text
 
     @property
     def compression_enabled(self):

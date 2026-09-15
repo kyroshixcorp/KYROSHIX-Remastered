@@ -18,6 +18,7 @@ from .audio import AudioLoopsMixin
 from .vision import VisionLoopMixin
 from .receive import ReceiveLoopMixin
 from .leak_filter import strip_tool_call_leaks
+from src.model_caps import describe as describe_caps
 
 logger = logging.getLogger(__name__)
 
@@ -311,7 +312,7 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
                 break
             await asyncio.sleep(0.1)
         try:
-            if self.config.is_31_model:
+            if self.config.uses_realtime_text:
                 manual_vad = getattr(self.config, "vad_mode", "auto") == "silero"
                 if manual_vad:
                     await self._session.send_realtime_input(activity_start=types.ActivityStart())
@@ -359,7 +360,7 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
         if not text:
             return False
         try:
-            if self.config.is_31_model:
+            if self.config.uses_realtime_text:
                 await self._session.send_realtime_input(text=text)
             else:
                 await self._session.send_client_content(
@@ -391,8 +392,8 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
                 break
             await asyncio.sleep(0.1)
         try:
-            if self.config.is_31_model:
-                # 3.1 models: extract text from turns and send via realtime input
+            if self.config.uses_realtime_text:
+                # new gen models: extract text from turns and send via realtime input
                 text = self._extract_text_from_turns(turns)
                 if text:
                     await self._session.send_realtime_input(text=text)
@@ -550,13 +551,12 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
                     logger.info("Using v1alpha API with affective dialog / proactivity")
                 else:
                     live_config = self._build_config(skip_alpha_features=self._alpha_fallback_failed)
-                # Log model family info on first connect
-                if self.config.is_31_model:
-                    logger.info("Using 3.1 model (thinkingLevel, realtime text injection, no affective/proactive)")
-                    if not self.config.google_search_enabled:
-                        logger.info("Google Search auto-disabled for 3.1 model")
-                else:
-                    logger.info("Using 2.5 model (thinkingBudget, send_client_content, v1alpha features available)")
+                # Log what we worked out about this model. config_builder already
+                # reported any settings it had to drop or change.
+                caps = self.config.model_capabilities
+                logger.info(f"Model profile: {caps.family} ({describe_caps(caps)})")
+                if not self.config.google_search_enabled and caps.google_search is False:
+                    logger.info("Google Search grounding off by default for this model (set google_search: true to force it on)")
                 # Log VAD mode
                 if self.config.vad_mode == "silero":
                     logger.debug(f"Silero VAD enabled (threshold={self.config.vad_silero_threshold}, silence={self.config.vad_silence_duration_ms}ms)")

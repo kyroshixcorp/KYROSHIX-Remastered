@@ -358,11 +358,20 @@ function updateVadOptions() {
   $('#vadAutoOptions').classList.toggle('visible', mode === 'auto');
 }
 
+function thinkingModeFor(model) {
+  // matches the profiles in src/model_caps.py
+  if (model.includes('3.8-live-extended-thinking')) return 'level';
+  if (model.includes('3.8-live')) return 'none';
+  if (model.includes('3.1')) return 'level';
+  return 'budget';
+}
+
 function updateThinkingFields() {
-  const model = $('#gemini_model').value;
-  const is31 = model.includes('3.1');
-  $('#thinkingLevelField').style.display = is31 ? '' : 'none';
-  $('#thinkingBudgetField').style.display = is31 ? 'none' : '';
+  const mode = thinkingModeFor($('#gemini_model').value);
+  $('#thinkingLevelField').style.display = mode === 'level' ? '' : 'none';
+  $('#thinkingBudgetField').style.display = mode === 'budget' ? '' : 'none';
+  const none = $('#thinkingNoneField');
+  if (none) none.style.display = mode === 'none' ? '' : 'none';
 }
 
 function updateTtsOptions() {
@@ -460,7 +469,7 @@ function collectValues() {
   const inputDevice = $('#audio_input').value;
   const outputDevice = $('#audio_output').value;
   const model = $('#gemini_model').value;
-  const is31 = model.includes('3.1');
+  const thinkingMode = thinkingModeFor(model);
 
   const vadMode = $('#vad_mode').value;
   const vad = { mode: vadMode, silence_duration_ms: parseInt($('#vad_silence').value) };
@@ -470,9 +479,9 @@ function collectValues() {
   }
 
   const thinking = { include_thoughts: false };
-  if (is31) {
+  if (thinkingMode === 'level') {
     thinking.level = $('#thinking_level').value;
-  } else {
+  } else if (thinkingMode === 'budget') {
     const budget = $('#thinking_budget').value.trim();
     if (budget !== '') thinking.budget = parseInt(budget);
   }

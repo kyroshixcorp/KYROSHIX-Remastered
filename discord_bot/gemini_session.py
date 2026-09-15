@@ -42,6 +42,7 @@ class GeminiTextSession:
         self._closing = False
         self._session_resumed = False
         self._bad_response_streak = 0
+        self._compat_notes_logged = set()
         self._load_session_handle()
 
     def _build_config(self):
@@ -93,31 +94,26 @@ class GeminiTextSession:
                 cw_kwargs["trigger_tokens"] = self.config.compression_trigger_tokens
             config_kwargs["context_window_compression"] = types.ContextWindowCompressionConfig(**cw_kwargs)
 
-        # Thinking configuration
-        if self.config.is_31_model:
-            # 3.1 models use thinking_level (minimal/low/medium/high) instead of budget
-            thinking_level = self.config.thinking_level
-            include_thoughts = self.config.thinking_include_thoughts
-            if thinking_level is not None or include_thoughts:
-                thinking_kwargs = {}
-                if thinking_level is not None:
-                    thinking_kwargs["thinking_level"] = thinking_level
-                if include_thoughts:
-                    thinking_kwargs["include_thoughts"] = True
-                config_kwargs["thinking_config"] = types.ThinkingConfig(**thinking_kwargs)
-        else:
-            # 2.5 models use thinking_budget (token count)
-            thinking_budget = self.config.thinking_budget
-            include_thoughts = self.config.thinking_include_thoughts
-            if thinking_budget is not None or include_thoughts:
-                thinking_kwargs = {}
-                if thinking_budget is not None:
-                    thinking_kwargs["thinking_budget"] = thinking_budget
-                if include_thoughts:
-                    thinking_kwargs["include_thoughts"] = True
-                config_kwargs["thinking_config"] = types.ThinkingConfig(**thinking_kwargs)
+        # map whatever the user set onto what this model accepts, log any corrections
+        thinking_kwargs, thinking_notes = self.config.resolve_thinking_config()
+        self._log_compat_notes(thinking_notes)
+        if thinking_kwargs:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(**thinking_kwargs)
+
+        if self.config.model_capabilities.history_config:
+            config_kwargs["history_config"] = types.HistoryConfig(
+                initial_history_in_client_content=True
+            )
 
         return types.LiveConnectConfig(**config_kwargs)
+
+    def _log_compat_notes(self, notes):
+        for note in notes:
+            key = str(note)
+            if key in self._compat_notes_logged:
+                continue
+            self._compat_notes_logged.add(key)
+            logger.warning(f"model compat: {note}")
 
     def _load_session_handle(self):
         if not SESSION_HANDLE_FILE.exists():
@@ -187,8 +183,8 @@ class GeminiTextSession:
         )
         live_config = self._build_config()
 
-        model_family = "3.1" if self.config.is_31_model else "2.5"
-        logger.info(f"Connecting Discord bot to Gemini Live ({self.config.model}) [{model_family} model]...")
+        caps = self.config.model_capabilities
+        logger.info(f"Connecting Discord bot to Gemini Live ({self.config.model}) [family {caps.family}]...")
         return self._client.aio.live.connect(
             model=self.config.model,
             config=live_config,
@@ -227,8 +223,8 @@ class GeminiTextSession:
             except asyncio.QueueEmpty:
                 break
 
-        if self.config.is_31_model:
-            # 3.1 models: inject images via send_client_content, send text via realtime input
+        if self.config.uses_realtime_text:
+            # new gen models: inject images via send_client_content, send text via realtime input
             if images:
                 img_data, mime_type = images[0]
                 await self._session.send_client_content(
@@ -291,8 +287,8 @@ class GeminiTextSession:
             )
 
         # Send the new message
-        if self.config.is_31_model:
-            # 3.1 models: inject images via client content, send text via realtime input
+        if self.config.uses_realtime_text:
+            # new gen models: inject images via client content, send text via realtime input
             if images:
                 img_data, mime_type = images[0]
                 await self._session.send_client_content(
@@ -324,8 +320,8 @@ class GeminiTextSession:
         await self._connected.wait()
         if not self._session:
             return
-        if self.config.is_31_model:
-            # 3.1 models: use send_realtime_input for mid-session text
+        if self.config.uses_realtime_text:
+            # new gen models: use send_realtime_input for mid-session text
             await self._session.send_realtime_input(text=text)
         else:
             await self._session.send_client_content(
@@ -381,7 +377,7 @@ class GeminiTextSession:
                             if self.tool_handler._personality_prompt:
                                 prompt = self.tool_handler._personality_prompt
                                 self.tool_handler._personality_prompt = None
-                                if self.config.is_31_model:
+                                if self.config.uses_realtime_text:
                                     await self._session.send_realtime_input(text=prompt)
                                 else:
                                     await self._session.send_client_content(

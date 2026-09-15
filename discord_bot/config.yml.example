@@ -28,9 +28,13 @@ gemini:
   #  - "BACKUP_KEY_2"
 
   # Gemini Live model
-  # Options: "gemini-3.1-flash-live-preview" (latest, lower latency)
+  # Options: "gemini-3.8-live" (fastest, reasons on its own)
+  #          "gemini-3.8-live-extended-thinking" (thinks harder, background reasoning)
+  #          "gemini-3.1-flash-live-preview" (previous gen)
   #          "gemini-2.5-flash-native-audio-preview-09-2025" (legacy)
   #          "gemini-2.5-flash-native-audio-preview-12-2025" (legacy)
+  # Any other Live model name works too. Unknown ones fall back to the closest
+  # generation by version number and say so in the console on startup.
   model: "gemini-2.5-flash-native-audio-preview-12-2025"
 
   # System prompt -- select a named prompt from config/prompts/prompts.yml
@@ -55,14 +59,20 @@ gemini:
   top_k: null          # Top-k sampling (null = model default)
 
   # ── Thinking Configuration ──
-  # Enables the model to "think" before responding (inner monologue).
+  # How much the model reasons before it answers. Anything the chosen model
+  # does not understand is skipped automatically and the reason is logged.
   thinking:
-    # For 2.5 models: thinking token budget (int, higher = more thorough, 0 = disable)
+    # Master switch. false = do not send any thinking settings at all.
+    enabled: true
+    # Token budget, 2.5 models only (int, higher = more thorough, 0 = disable)
+    # Ignored on 3.1 and 3.8 models, which use levels instead.
     budget: 2048
-    # For 3.1 models: thinking level (minimal / low / medium / high)
-    # Ignored on 2.5 models. Set budget to null when using a 3.1 model.
+    # Thinking depth, 3.1 and 3.8 models only.
+    # Options: "minimal" (lowest latency), "low", "medium", "high"
+    # gemini-3.8-live-extended-thinking bumps "minimal" up to "low" for you.
+    # gemini-3.8-live takes no thinking settings at all.
     level: null
-    # Whether to include thought summaries in logs.
+    # Whether to include thought summaries in logs. Not available on gemini-3.8-live.
     include_thoughts: false
 
   # ── Context Window Compression ──

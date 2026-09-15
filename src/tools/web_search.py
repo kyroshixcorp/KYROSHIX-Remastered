@@ -37,8 +37,8 @@ class WebSearchTools(BaseTool):
     def declarations(self, config=None):
         if config and not config.get("web_search", "enabled", default=False):
             return []
-        # Only expose web search on 3.1 models (2.5 models have built-in google_search)
-        if config and not config.is_31_model:
+        # only expose web search where the model has no built-in grounding
+        if config and config.model_capabilities.google_search:
             return []
         return [
             types.FunctionDeclaration(

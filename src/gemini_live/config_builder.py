@@ -1,11 +1,4 @@
-"""Builds the LiveConnectConfig the session hands to genai client.aio.live.connect.
-
-Pulled out of session.py because this method alone is ~170 lines of pure
-config plumbing - VAD, transcription, voice, session resumption, sampling
-params, alpha features, context window compression, media resolution,
-thinking config, history config. None of it touches I/O, just reads
-self.config and produces a config object.
-"""
+"""Builds the LiveConnectConfig the session hands to genai client.aio.live.connect."""
 
 import logging
 
@@ -19,13 +12,28 @@ logger = logging.getLogger(__name__)
 class ConfigBuilderMixin:
     def _needs_alpha_api(self):
         """Check if any v1alpha-only features are enabled (affective dialog, proactivity).
-        3.1 models don't support these features but still use v1alpha API version."""
-        if self.config.is_31_model:
+        Models that dont support them still connect over v1alpha, we just omit the params."""
+        if not self.config.model_capabilities.alpha_features:
             return False
         return (self.config.enable_affective_dialog is not None
                 or self.config.proactivity is not None)
 
+    def _log_compat_notes(self, notes):
+        # each distinct correction logs once per session so reconnects dont spam it
+        seen = getattr(self, "_compat_notes_logged", None)
+        if seen is None:
+            seen = set()
+            self._compat_notes_logged = seen
+        for note in notes:
+            key = str(note)
+            if key in seen:
+                continue
+            seen.add(key)
+            logger.warning(f"model compat: {note}")
+
     def _build_config(self, skip_alpha_features=False):
+        caps = self.config.model_capabilities
+
         # Build VAD config based on mode
         if self.config.vad_mode == "silero":
             # Client-side Silero VAD: disable server VAD, we handle speech detection ourselves
@@ -106,11 +114,12 @@ class ConfigBuilderMixin:
             config_kwargs["top_k"] = self.config.top_k
         if self.config.max_output_tokens is not None:
             config_kwargs["max_output_tokens"] = self.config.max_output_tokens
-        if not skip_alpha_features and not self.config.is_31_model:
+        if not skip_alpha_features and caps.alpha_features:
             if self.config.enable_affective_dialog is not None:
                 config_kwargs["enable_affective_dialog"] = self.config.enable_affective_dialog
             if self.config.proactivity is not None:
                 config_kwargs["proactivity"] = self.config.proactivity
+        self._log_compat_notes(self.config.alpha_feature_notes())
 
         # Context window compression
         # When custom compression is enabled, skip Gemini's built-in sliding window
@@ -146,35 +155,22 @@ class ConfigBuilderMixin:
                 tokens = token_map.get(media_res.lower(), "?")
                 logger.info(f"Media resolution: {media_res} (~{tokens} tokens/frame)")
 
-        # Thinking configuration
-        if self.config.is_31_model:
-            # 3.1 models use thinking_level (minimal/low/medium/high) instead of budget
-            thinking_level = self.config.thinking_level
-            include_thoughts = self.config.thinking_include_thoughts
-            if thinking_level is not None or include_thoughts:
-                thinking_kwargs = {}
-                if thinking_level is not None:
-                    thinking_kwargs["thinking_level"] = thinking_level
-                if include_thoughts:
-                    thinking_kwargs["include_thoughts"] = True
-                config_kwargs["thinking_config"] = types.ThinkingConfig(**thinking_kwargs)
-        else:
-            # 2.5 models use thinking_budget (token count)
-            thinking_budget = self.config.thinking_budget
-            include_thoughts = self.config.thinking_include_thoughts
-            if thinking_budget is not None or include_thoughts:
-                thinking_kwargs = {}
-                if thinking_budget is not None:
-                    thinking_kwargs["thinking_budget"] = thinking_budget
-                if include_thoughts:
-                    thinking_kwargs["include_thoughts"] = True
-                config_kwargs["thinking_config"] = types.ThinkingConfig(**thinking_kwargs)
+        # Thinking configuration. the resolver maps whatever the user set onto
+        # what this model actually accepts, so a wrong pick gets nudged or
+        # dropped with a logged reason instead of failing the connect.
+        thinking_kwargs, thinking_notes = self.config.resolve_thinking_config()
+        self._log_compat_notes(thinking_notes)
+        if thinking_kwargs:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(**thinking_kwargs)
+            shown = ", ".join(f"{k}={v}" for k, v in thinking_kwargs.items())
+            logger.info(f"Thinking config: {shown}")
+        elif caps.thinking == "none":
+            logger.info(f"{caps.name} reasons on its own, no thinking config sent")
 
-        # 3.1 needs initial_history_in_client_content=true so that the first
-        # send_client_content (used for replay/summary seeding on a fresh
-        # connect) is actually accepted as history. without this flag the
-        # server treats it as a regular conversation update and rejects it.
-        if self.config.is_31_model:
+        # New gen models need initial_history_in_client_content=true so the first
+        # send_client_content (replay/summary seeding on a fresh connect) is
+        # accepted as history rather than rejected as a mid-session update.
+        if caps.history_config:
             config_kwargs["history_config"] = types.HistoryConfig(
                 initial_history_in_client_content=True
             )
