@@ -230,6 +230,18 @@ def check_alpha_features(
     return notes
 
 
+def interaction_is_idle(server_content) -> bool:
+    """True when the model reported interaction_status=IDLE.
+
+    Only newer models send this, older ones leave it unset, so an absent value
+    is treated as "not idle" and callers fall back to turn_complete.
+    """
+    status = getattr(server_content, "interaction_status", None)
+    if status is None:
+        return False
+    return str(getattr(status, "value", status)).upper().endswith("IDLE")
+
+
 def describe(caps: ModelCapabilities) -> str:
     """Short human readable summary for the startup log."""
     bits = [f"family {caps.family}"]

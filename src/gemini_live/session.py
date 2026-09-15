@@ -49,6 +49,8 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
         self._tts_audio_task: asyncio.Task | None = None  # Managed separately for hot-swap
         self._speaking = False
         self._thinking_shown = False
+        self._awaiting_idle = False  # True when we hold the mic shut until the model reports IDLE
+        self._awaiting_idle_since = 0
         self._transcript_buffer = ""
         self._input_transcript_buffer = ""  # Buffer for user speech
         self._session_handle = None
@@ -73,6 +75,7 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
         self._chatbox_error_shown = False  # Track if we've shown an error to VRChat chatbox
         self._last_audio_time = 0  # Track when last audio was received
         self._idle_timeout = 15.0  # Stop talking animations after 15s idle
+        self._idle_watchdog_seconds = 30.0  # Drop the post-turn mic hold if IDLE never shows up
         self._last_interaction_time = time.time()  # Track last user/AI interaction for engagement
         self._idle_engagement_sent = False  # Only send one engagement prompt per idle period
         self._is_idle = False  # True when AI is idle (not speaking, no active tasks)
@@ -634,6 +637,8 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
                     self._audio_gated = False
                     self._manual_vad_speaking = False
                     self._manual_vad_silence_start = 0
+                    self._awaiting_idle = False
+                    self._awaiting_idle_since = 0
                     # Reset Silero VAD internal state if loaded
                     if self._silero_vad is not None:
                         self._silero_vad.reset_states()
@@ -975,7 +980,22 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
         """Monitor for idle state, stop talking animations, and trigger idle animation."""
         while True:
             await asyncio.sleep(1)
-            if self._speaking and self._last_audio_time > 0:
+            # Models with background reasoning hold the mic shut after a turn until
+            # they report IDLE. If that never turns up, dont leave the mic closed.
+            if self._awaiting_idle and self._awaiting_idle_since:
+                waited = time.time() - self._awaiting_idle_since
+                if waited >= self._idle_watchdog_seconds:
+                    logger.warning(
+                        f"{self.config.model} never sent interaction_status=IDLE after its turn "
+                        f"({waited:.0f}s), releasing the audio gate so the mic works again"
+                    )
+                    _broadcast_console("info", "Model went quiet without reporting IDLE, mic released")
+                    self._awaiting_idle = False
+                    self._awaiting_idle_since = 0
+                    self._end_model_turn()
+            # The awaiting-idle branch above owns _speaking during that window, so
+            # don't let the animation timeout clear it out from under us.
+            if self._speaking and not self._awaiting_idle and self._last_audio_time > 0:
                 idle_time = time.time() - self._last_audio_time
                 if idle_time >= self._idle_timeout:
                     logger.debug(f"AI idle for {idle_time:.1f}s, stopping talking animations")

@@ -1,14 +1,4 @@
-"""Receive loop for the Gemini Live session.
-
-This is by far the chunkiest piece of session logic, it has to demux
-every event Gemini emits in a single async for: thoughts, audio inline_data,
-input/output transcription, turn_complete, interruptions, tool_call,
-usage_metadata, go_away, session_resumption_update.
-
-Plus the two chatbox update helpers that are only called from this loop.
-
-Pulled out as a mixin to keep session.py readable.
-"""
+"""Receive loop for the Gemini Live session, demuxes every event type Gemini emits."""
 
 import asyncio
 import json
@@ -19,6 +9,7 @@ from google.genai import types
 from websockets.exceptions import ConnectionClosed
 
 from src.gemini_live.leak_filter import strip_tool_call_leaks
+from src.model_caps import interaction_is_idle
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +25,50 @@ def _broadcast_console(log_type: str, content: str, extra: dict = None):
 
 
 class ReceiveLoopMixin:
+    async def _finish_spoken_turn(self):
+        # model stopped talking. emit the turn output but do NOT free the mic,
+        # background reasoning may still be running. _end_model_turn does that.
+        if self._thinking_shown:
+            self.audio.stop_thinking_sound()
+            if self._emotion_system:
+                self._emotion_system.stop_thinking()
+        self._thinking_shown = False
+        if self._emotion_system:
+            self._emotion_system.stop_speaking()
+        await self._finalize_chatbox()
+        if self.config.obs_enabled:
+            _broadcast_console("turn_complete", "")
+        # User message already streamed in-place via stream_user_message
+        ai_text, leaked = strip_tool_call_leaks(self._transcript_buffer.strip())
+        if leaked:
+            logger.warning("stripped tool-call leak from transcript before logging")
+        if ai_text:
+            self._conv_logger.add_assistant_message(ai_text)
+        self._transcript_buffer = ""
+        if ai_text:
+            try:
+                from src.plugins import emit_event
+                emit_event("message_out", ai_text)
+            except Exception as e:
+                logger.debug(f"plugin message_out dispatch failed: {e}")
+        # Flush remaining text to TTS provider
+        if self._tts:
+            self._tts.turn_complete()
+        # Delay user finalization to catch late transcription events
+        self._schedule_user_finalize()
+
+    def _end_model_turn(self):
+        # model is fully done with us, safe to start listening again
+        if self._thinking_shown:
+            # it went back to reasoning after its turn, clean that phase up too
+            self.audio.stop_thinking_sound()
+            if self._emotion_system:
+                self._emotion_system.stop_thinking()
+            self._thinking_shown = False
+        self._speaking = False
+        self._ungate_audio()
+        self.osc.set_typing(False)
+
     async def _receive_loop(self, session):
         while True:
             try:
@@ -66,6 +101,11 @@ class ReceiveLoopMixin:
                                     # Gate outbound audio while model speaks (prevents echo/barge-in)
                                     if self.config.vad_mode == "silero":
                                         await self._gate_audio(session)
+                                elif self._awaiting_idle:
+                                    # spoke again after its turn, same turn is still going
+                                    self._awaiting_idle = False
+                                    self._awaiting_idle_since = 0
+                                    self.osc.set_typing(True)
                                 # Try to start talking animations (idempotent, handles manual animation blocking)
                                 if self._emotion_system:
                                     self._emotion_system.start_speaking()
@@ -120,50 +160,32 @@ class ReceiveLoopMixin:
                                 self._tts.feed_text(transcription.text)
 
                     if response.server_content and response.server_content.turn_complete:
-                        self._speaking = False
-                        # Ungate audio so mic input can flow again
-                        self._ungate_audio()
-                        if self._thinking_shown:
-                            self.audio.stop_thinking_sound()
-                            if self._emotion_system:
-                                self._emotion_system.stop_thinking()
-                        self._thinking_shown = False
-                        if self._emotion_system:
-                            self._emotion_system.stop_speaking()
-                        await self._finalize_chatbox()
-                        if self.config.obs_enabled:
-                            _broadcast_console("turn_complete", "")
-                        # User message already streamed in-place via stream_user_message
-                        ai_text, leaked = strip_tool_call_leaks(self._transcript_buffer.strip())
-                        if leaked:
-                            logger.warning("stripped tool-call leak from transcript before logging")
-                        if ai_text:
-                            self._conv_logger.add_assistant_message(ai_text)
-                        self._transcript_buffer = ""
-                        if ai_text:
-                            try:
-                                from src.plugins import emit_event
-                                emit_event("message_out", ai_text)
-                            except Exception as e:
-                                logger.debug(f"plugin message_out dispatch failed: {e}")
-                        # Flush remaining text to TTS provider
-                        if self._tts:
-                            self._tts.turn_complete()
-                        # Delay user finalization to catch late transcription events
-                        self._schedule_user_finalize()
+                        await self._finish_spoken_turn()
+                        if self.config.model_capabilities.turn_complete_is_idle:
+                            self._end_model_turn()
+                        elif not self._awaiting_idle:
+                            # this model keeps reasoning or running tools after a turn, so
+                            # turn_complete does not mean it is done. hold the mic shut
+                            # until it reports IDLE, or _idle_check_loop gives up on it.
+                            self._awaiting_idle = True
+                            self._awaiting_idle_since = time.time()
+                            logger.debug("turn_complete seen, holding mic until interaction_status=IDLE")
+
+                    if response.server_content and interaction_is_idle(response.server_content):
+                        if self._awaiting_idle:
+                            self._awaiting_idle = False
+                            self._awaiting_idle_since = 0
+                            logger.debug("interaction_status=IDLE, model turn fully finished")
+                            self._end_model_turn()
 
                     if response.server_content and response.server_content.interrupted:
-                        self._speaking = False
-                        # Ungate audio on interruption so user can speak
-                        self._ungate_audio()
-                        if self._thinking_shown:
-                            self.audio.stop_thinking_sound()
-                            if self._emotion_system:
-                                self._emotion_system.stop_thinking()
-                        self._thinking_shown = False
+                        # an interruption ends the turn regardless of interaction_status
+                        self._awaiting_idle = False
+                        self._awaiting_idle_since = 0
+                        self._end_model_turn()
+                        # unlike a normal turn end, the model was cut off mid speech
                         if self._emotion_system:
                             self._emotion_system.stop_speaking()
-                        self.osc.set_typing(False)
                         ai_text, leaked = strip_tool_call_leaks(self._transcript_buffer.strip())
                         if leaked:
                             logger.warning("stripped tool-call leak from transcript before logging (interrupted turn)")
@@ -232,7 +254,7 @@ class ReceiveLoopMixin:
                                 fr = await self.tool_handler.handle(fc)
                                 result_dict = fr.response if fr.response else {}
                                 result_str = json.dumps(result_dict)
-                                _broadcast_console("tool_response", f"{fc.name} → {result_str}")
+                                _broadcast_console("tool_response", f"{fc.name} â†’ {result_str}")
                                 self._conv_logger.add_tool_response(fc.name, result_dict)
                                 responses.append(fr)
                             await session.send_tool_response(function_responses=responses)
@@ -247,8 +269,10 @@ class ReceiveLoopMixin:
                             # Reset playback flag BEFORE ungating so the first chunk of the
                             # post-tool reply doesn't get swallowed by stale interrupt state
                             self._playback_interrupted = False
-                            # Ungate audio after tool response sent
-                            self._ungate_audio()
+                            # Ungate audio after tool response sent, unless the model is
+                            # still mid-turn and we're holding the mic for it
+                            if not self._awaiting_idle:
+                                self._ungate_audio()
 
                     # Track usage metadata if available
                     if hasattr(response, "usage_metadata") and response.usage_metadata:

@@ -9,19 +9,17 @@ from google import genai
 from google.genai import types
 from google.genai.errors import APIError
 
+from src.model_caps import interaction_is_idle
+
 logger = logging.getLogger(__name__)
 
 SESSION_HANDLE_FILE = Path("discord_bot/data/session_handle.txt")
 SESSION_EXPIRY_HOURS = 2
+IDLE_GRACE_SECONDS = 2.0  # how long to wait for IDLE before delivering a reply anyway
 
 
 class GeminiTextSession:
-    """Gemini Live session for Discord bot using AUDIO modality with transcription.
-
-    Uses AUDIO response modality (required by Gemini Live) but captures the
-    output_audio_transcription for text. Audio data is discarded since we only
-    need the transcription for Discord messages.
-    """
+    """Gemini Live session for Discord bot, AUDIO modality with output transcription."""
 
     def __init__(self, config, tool_handler, personality_mgr=None):
         self.config = config
@@ -43,6 +41,9 @@ class GeminiTextSession:
         self._session_resumed = False
         self._bad_response_streak = 0
         self._compat_notes_logged = set()
+        self._pending_transcript = ""
+        self._awaiting_idle = False
+        self._idle_flush_task = None
         self._load_session_handle()
 
     def _build_config(self):
@@ -114,6 +115,26 @@ class GeminiTextSession:
                 continue
             self._compat_notes_logged.add(key)
             logger.warning(f"model compat: {note}")
+
+    async def _deliver_transcript(self):
+        # hand the accumulated reply to whoever is waiting on it
+        text = self._pending_transcript.strip()
+        self._pending_transcript = ""
+        await self._response_queue.put(text if text else "")
+
+    async def _flush_after_grace(self):
+        # backstop for models that never report IDLE, so a caller never hangs on us
+        try:
+            await asyncio.sleep(IDLE_GRACE_SECONDS)
+            if self._awaiting_idle:
+                logger.warning(
+                    f"{self.config.model} never sent interaction_status=IDLE after its turn, "
+                    f"delivering the reply anyway"
+                )
+                self._awaiting_idle = False
+                await self._deliver_transcript()
+        except asyncio.CancelledError:
+            pass
 
     def _load_session_handle(self):
         if not SESSION_HANDLE_FILE.exists():
@@ -200,6 +221,11 @@ class GeminiTextSession:
                 await self._receive_task
             except (asyncio.CancelledError, Exception):
                 pass
+        if self._idle_flush_task and not self._idle_flush_task.done():
+            self._idle_flush_task.cancel()
+        self._idle_flush_task = None
+        self._awaiting_idle = False
+        self._pending_transcript = ""
         self._session = None
 
     async def send_message(self, text, images=None):
@@ -334,7 +360,6 @@ class GeminiTextSession:
 
     async def _receive_loop(self):
         """Continuously receive responses from Gemini Live."""
-        transcript_buffer = ""
         while not self._closing:
             try:
                 async for response in self._session.receive():
@@ -348,7 +373,7 @@ class GeminiTextSession:
                     ):
                         transcription = response.server_content.output_transcription
                         if hasattr(transcription, "text") and transcription.text:
-                            transcript_buffer += transcription.text
+                            self._pending_transcript += transcription.text
 
                     # Thinking/thought parts (for logging)
                     if response.server_content and response.server_content.model_turn:
@@ -356,13 +381,23 @@ class GeminiTextSession:
                             if getattr(part, "thought", False) and part.text:
                                 logger.debug(f"Discord bot thinking: {part.text[:100]}")
 
-                    # Turn complete - deliver accumulated transcription
+                    # Turn complete
                     if response.server_content and response.server_content.turn_complete:
-                        if transcript_buffer.strip():
-                            await self._response_queue.put(transcript_buffer.strip())
+                        if self.config.model_capabilities.turn_complete_is_idle:
+                            await self._deliver_transcript()
                         else:
-                            await self._response_queue.put("")
-                        transcript_buffer = ""
+                            # model can keep reasoning after a turn, so give it a chance
+                            # to finish before we hand a half answer to the caller
+                            self._awaiting_idle = True
+                            self._idle_flush_task = asyncio.create_task(self._flush_after_grace())
+
+                    if response.server_content and interaction_is_idle(response.server_content):
+                        if self._awaiting_idle:
+                            self._awaiting_idle = False
+                            if self._idle_flush_task and not self._idle_flush_task.done():
+                                self._idle_flush_task.cancel()
+                            self._idle_flush_task = None
+                            await self._deliver_transcript()
 
                     # Tool calls
                     if response.tool_call:
@@ -424,6 +459,11 @@ class GeminiTextSession:
                 async with connection as session:
                     self._session = session
                     self._bad_response_streak = 0
+                    self._pending_transcript = ""
+                    self._awaiting_idle = False
+                    if self._idle_flush_task and not self._idle_flush_task.done():
+                        self._idle_flush_task.cancel()
+                    self._idle_flush_task = None
                     if self._session_resumed:
                         logger.info("Discord bot resumed Gemini Live session")
                     else:
