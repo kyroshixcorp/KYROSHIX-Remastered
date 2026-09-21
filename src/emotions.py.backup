@@ -66,22 +66,8 @@ class EmotionSystem:
         if anims_cfg:
             for name, anim_data in anims_cfg.items():
                 if isinstance(anim_data, dict):
-                    # Backward compatible: old configs may use one osc_path;
-                    # KYROSHIX/RAVEN configs can use multiple typed OSC signals.
-                    raw_signals = anim_data.get('signals', []) or []
-                    signals = []
-                    if isinstance(raw_signals, list):
-                        for sig in raw_signals:
-                            if isinstance(sig, dict) and sig.get('path'):
-                                signals.append({
-                                    'path': str(sig.get('path')),
-                                    'on': sig.get('on', True),
-                                    'off': sig.get('off', False),
-                                })
-
                     self.animations[name] = {
                         'osc_path': anim_data.get('osc_path', ''),
-                        'signals': signals,
                         'category': anim_data.get('category', 'emotion'),
                         'looping': anim_data.get('looping', False),
                         'duration': float(anim_data.get('duration', self.default_duration)) if not anim_data.get('looping', False) else None,
@@ -356,9 +342,8 @@ class EmotionSystem:
             return False
         
         osc_path = anim_data.get('osc_path')
-        signals = anim_data.get('signals') or []
-        if not osc_path and not signals:
-            logger.warning(f"No OSC path/signals for animation: {name}")
+        if not osc_path:
+            logger.warning(f"No OSC path for animation: {name}")
             return False
         
         # Stop talking animations first - manual animations take priority
@@ -413,23 +398,6 @@ class EmotionSystem:
         if not anim_data:
             return
         
-        # New multi-signal format. This lets one semantic emotion drive several
-        # RAVEN face parameters at once and supports Bool/Float/Int values.
-        signals = anim_data.get('signals') or []
-        if signals:
-            for signal in signals:
-                path = signal.get('path')
-                if not path:
-                    continue
-                osc_value = signal.get('on', True) if value else signal.get('off', False)
-                try:
-                    self.osc_client.client.send_message(path, osc_value)
-                    logger.debug(f"OSC: {path} = {osc_value!r}")
-                except Exception as e:
-                    logger.error(f"Failed to send animation OSC {path}: {e}")
-            return
-
-        # Legacy single-boolean-path format remains supported.
         osc_path = anim_data.get('osc_path')
         if osc_path:
             try:
@@ -516,7 +484,7 @@ def generate_emotion_function_declarations(config) -> List[Dict[str, Any]]:
         return []
     
     # Build description
-    desc_parts = ["Control the avatar face/emotions. Use this proactively for clear emotional moments, but not on every sentence. Trigger reactions silently while continuing natural speech. Never narrate stage directions such as *smiles*, *blushes*, or *looks sad*."]
+    desc_parts = ["Control avatar animations/emotions. USE ACTIVELY to express yourself!"]
     if emotions:
         desc_parts.append(f"Emotions: {', '.join(emotions)}")
     if actions:
@@ -524,7 +492,7 @@ def generate_emotion_function_declarations(config) -> List[Dict[str, Any]]:
     if dances:
         desc_parts.append(f"Dances: {', '.join(dances)}")
     desc_parts.append("Looping animations (yelling, sad-idle, dances) stay on until stopAnimation is called. Non-looping ones (laugh, disappointed) auto-stop.")
-    desc_parts.append("Choose the animation whose meaning best matches the conversation. Use carinho or vergonha for affectionate/flirty moments, feliz for happiness or praise, triste for sadness, surpresa for genuine surprise, and irritada for annoyance/anger when those options exist. Be expressive without becoming repetitive.")
+    desc_parts.append("Call with 'laugh' when laughing, 'yelling' when angry, 'point-forwards' when pointing at something. Talking animations play automatically, do not trigger those. Be expressive and use emotions naturally during conversation without being asked.")
     
     # NO UNDERSCORES in function names to avoid Gemini Live 1011 errors
     # NO ENUM/ARRAY/BOOLEAN types to avoid 1008 errors

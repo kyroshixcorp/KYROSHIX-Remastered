@@ -374,24 +374,23 @@ def find_grid_origin(
     max_hits: int = 10,
     debug: bool = False,
 ):
-    """Locate valid PoseExfil grid origins quickly.
+    """Locate possible PoseExfil grid origins.
 
-    Fast path:
-      - builds tolerant RED/GREEN masks once
-      - searches the 2x2 GR/RG marker with vectorized NumPy operations
-      - prioritizes the configured cell size (normally 4 px)
-      - validates candidates by decoding the complete 34x2 strip
+    Unlike the original implementation, this does NOT require a perfectly
+    solid green rectangle.
 
-    Fallback:
-      - tries the other supported cell sizes using the same vectorized search
+    It searches for strongly green pixels and tests several physical cell
+    sizes around them.
 
     Returns:
+
         [(left, top, cell_size), ...]
     """
 
     import numpy as np
 
     red_mask, green_mask = _rgb_masks(arr)
+
     h, w = green_mask.shape
 
     cell_sizes = _candidate_cell_sizes(cell)
@@ -402,159 +401,165 @@ def find_grid_origin(
             ", ".join(str(v) for v in cell_sizes),
         )
 
-    valid_candidates = []
+    # Find green pixels.
+    ys, xs = np.where(green_mask)
+
+    if len(xs) == 0:
+        if debug:
+            print("  debug: no sufficiently green pixels found")
+        return []
+
+    # The HUD is expected to be near a screen edge and normally near the
+    # bottom-left. Searching every green pixel in a 4K game frame can be
+    # unnecessarily expensive.
+    #
+    # Prefer pixels in the outer screen area first.
+
+    edge_mask = (
+        (xs < int(w * 0.35))
+        | (xs > int(w * 0.65))
+        | (ys < int(h * 0.20))
+        | (ys > int(h * 0.80))
+    )
+
+    edge_xs = xs[edge_mask]
+    edge_ys = ys[edge_mask]
+
+    if len(edge_xs):
+        search_xs = edge_xs
+        search_ys = edge_ys
+    else:
+        search_xs = xs
+        search_ys = ys
+
+    candidates = []
     seen = set()
 
+    # Avoid testing millions of identical nearby pixels.
+    #
+    # Subsample if necessary.
+
+    max_green_samples = 50000
+
+    if len(search_xs) > max_green_samples:
+        step = max(1, len(search_xs) // max_green_samples)
+
+        search_xs = search_xs[::step]
+        search_ys = search_ys[::step]
+
     for test_cell in cell_sizes:
-        s = int(test_cell)
 
-        if s < 2:
-            continue
+        half = test_cell // 2
 
-        grid_w = GRID_W * s
-        grid_h = GRID_H * s
+        for gy, gx in zip(
+            search_ys.tolist(),
+            search_xs.tolist(),
+        ):
 
-        if grid_w > w or grid_h > h:
-            continue
+            # Assume this green pixel is somewhere around the center of
+            # marker cell [top row, column 32].
 
-        half = s // 2
+            approximate_x = gx - half
+            approximate_y = gy - half
 
-        # marker_x is the start of grid column 32.
-        # Restrict the search to positions where the COMPLETE 34x2 grid
-        # can exist. This removes most false positives immediately.
-        marker_x_min = 32 * s
-        marker_x_max = w - (2 * s)
-        marker_y_min = 0
-        marker_y_max = h - (2 * s)
+            for dy in range(
+                -ALIGN_TOLERANCE,
+                ALIGN_TOLERANCE + 1,
+            ):
 
-        if marker_x_min > marker_x_max or marker_y_min > marker_y_max:
-            continue
+                marker_y = approximate_y + dy
 
-        # Coordinates below are CENTER pixels of the marker's top-left cell.
-        cx0 = marker_x_min + half
-        cx1 = marker_x_max + half
-        cy0 = marker_y_min + half
-        cy1 = marker_y_max + half
+                if marker_y < 0:
+                    continue
 
-        # Vectorized expected marker:
-        #
-        #     GREEN | RED
-        #     ------+------
-        #      RED  | GREEN
-        #
-        # The +1 makes the inclusive maximum center coordinate part of
-        # the slice. This is important when the strip touches the bottom
-        # edge of the monitor (e.g. top=2152 on a 2160p display).
-        tl = green_mask[cy0:cy1 + 1, cx0:cx1 + 1]
-        tr = red_mask[cy0:cy1 + 1, cx0 + s:cx1 + s + 1]
-        bl = red_mask[cy0 + s:cy1 + s + 1, cx0:cx1 + 1]
-        br = green_mask[cy0 + s:cy1 + s + 1, cx0 + s:cx1 + s + 1]
+                if marker_y + (2 * test_cell) > h:
+                    continue
 
-        marker_hits = tl & tr & bl & br
+                for dx in range(
+                    -ALIGN_TOLERANCE,
+                    ALIGN_TOLERANCE + 1,
+                ):
 
-        if not marker_hits.any():
-            if debug:
-                print(f"  fast cell={s}: no GR/RG marker hits")
-            continue
+                    marker_x = approximate_x + dx
 
-        hit_ys, hit_xs = np.where(marker_hits)
+                    if marker_x < 0:
+                        continue
 
-        # Convert hit coordinates back to marker top-left positions.
-        raw_candidates = []
+                    if marker_x + (2 * test_cell) > w:
+                        continue
 
-        for hy, hx in zip(hit_ys.tolist(), hit_xs.tolist()):
-            marker_x = cx0 + hx - half
-            marker_y = cy0 + hy - half
+                    center_score = _marker_score(
+                        red_mask,
+                        green_mask,
+                        marker_x,
+                        marker_y,
+                        test_cell,
+                    )
 
-            left = marker_x - (32 * s)
-            top = marker_y
+                    # Require reasonable center confidence.
+                    if center_score < 0.70:
+                        continue
 
-            key = (int(left), int(top), s)
+                    region_score = _marker_region_score(
+                        red_mask,
+                        green_mask,
+                        marker_x,
+                        marker_y,
+                        test_cell,
+                    )
 
-            if key in seen:
-                continue
+                    # Some filtering/scaling can destroy cell borders,
+                    # therefore region score is deliberately permissive.
+                    if region_score < COLOR_SCORE_THRESHOLD:
+                        continue
 
-            seen.add(key)
+                    # Marker begins at grid column 32.
 
-            # Rank likely HUD locations first. The shader normally sits
-            # near the bottom-left, but this is only a priority, not a
-            # hard requirement.
-            bottom_distance = h - (top + grid_h)
-            left_distance = left
+                    left = marker_x - (32 * test_cell)
+                    top = marker_y
 
-            raw_candidates.append(
-                (
-                    max(0, bottom_distance),
-                    max(0, left_distance),
-                    int(left),
-                    int(top),
-                    s,
-                )
-            )
+                    if left < 0:
+                        continue
 
-        raw_candidates.sort(key=lambda item: (item[0], item[1]))
+                    if left + (GRID_W * test_cell) > w:
+                        continue
 
-        if debug:
-            print(
-                f"  fast cell={s}: "
-                f"{len(raw_candidates)} marker hit(s)"
-            )
+                    if top + (GRID_H * test_cell) > h:
+                        continue
 
-        # Do not return a marker based on color alone. Validate the entire
-        # encoded strip with decode_strip(), which rejects random UI colors.
-        for _, _, left, top, s in raw_candidates:
-            result = try_decode_candidate(
-                arr,
-                left,
-                top,
-                s,
-                debug=False,
-            )
+                    key = (
+                        int(left),
+                        int(top),
+                        int(test_cell),
+                    )
 
-            if result is None:
-                continue
+                    if key in seen:
+                        continue
 
-            _, _, final_left, final_top = result
-            final_key = (
-                int(final_left),
-                int(final_top),
-                int(s),
-            )
+                    seen.add(key)
 
-            if final_key in valid_candidates:
-                continue
+                    candidates.append(
+                        (
+                            int(left),
+                            int(top),
+                            int(test_cell),
+                        )
+                    )
 
-            valid_candidates.append(final_key)
+                    if debug:
+                        print(
+                            "  candidate:"
+                            f" left={left}"
+                            f" top={top}"
+                            f" cell={test_cell}"
+                            f" center={center_score:.2f}"
+                            f" region={region_score:.2f}"
+                        )
 
-            if debug:
-                center_score = _marker_score(
-                    red_mask,
-                    green_mask,
-                    left + 32 * s,
-                    top,
-                    s,
-                )
-                region_score = _marker_region_score(
-                    red_mask,
-                    green_mask,
-                    left + 32 * s,
-                    top,
-                    s,
-                )
-                print(
-                    "  VALID PoseStrip:"
-                    f" left={final_left}"
-                    f" top={final_top}"
-                    f" cell={s}"
-                    f" center={center_score:.2f}"
-                    f" region={region_score:.2f}"
-                )
+                    if len(candidates) >= max_hits:
+                        return candidates
 
-            # A successfully decoded full strip is definitive. Returning
-            # immediately avoids scanning thousands of unrelated colors.
-            return valid_candidates[:max_hits]
-
-    return valid_candidates[:max_hits]
+    return candidates
 
 
 # ---------------------------------------------------------------------------

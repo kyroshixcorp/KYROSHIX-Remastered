@@ -1,4 +1,4 @@
-"""PlayerTracker, composed from mixins."""
+﻿"""PlayerTracker, composed from mixins."""
 
 import threading
 import time
@@ -36,7 +36,7 @@ class PlayerTracker(
         self._use_half = False
         self._first_frame = True
         self._preload_ready = threading.Event()
-        self._vision_debug = False  # flipped True when vision debug server is running
+        self._vision_debug = True  # publish annotated YOLO frames to Vision panel
         self._next_cache_cleanup = 0.0
         self._next_tracker_reset = 0.0
 
@@ -59,3 +59,4 @@ class PlayerTracker(
         now = time.perf_counter()
         self._next_cache_cleanup = now + float(self._cfg.get("cache_cleanup_interval", 300.0))
         self._next_tracker_reset = now + float(self._cfg.get("tracker_reset_interval", 1800.0))
+

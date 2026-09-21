@@ -155,6 +155,19 @@ ENV/
 env.bak/
 venv.bak/
 
+# Local configuration and backups may contain credentials.
+config.yml
+config.yml.backup
+*.backup
+*.bak
+*.before-*
+configurator.py.backup
+main.py.before-*
+run.bat.before-*
+supervisor.py.before-*
+vrchat_autojoin.py.web-backup
+data/web_auth.env
+
 # Spyder project settings
 .spyderproject
 .spyproject

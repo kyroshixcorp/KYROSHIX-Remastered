@@ -1,7 +1,10 @@
 """Main tracker loop, runs in a background thread at TARGET_FPS."""
 
+from __future__ import annotations
+
 import logging
 import time
+from typing import Any, cast
 
 from .config import FRAME_H, FRAME_W, TARGET_FPS
 
@@ -9,7 +12,7 @@ logger = logging.getLogger("src.tracker")
 
 
 class LoopMixin:
-    def _run_loop(self):
+    def _run_loop(self: Any) -> None:
         import cv2
 
         # init screen capture FIRST so the early-bettercam DXGI context
@@ -39,7 +42,7 @@ class LoopMixin:
                     time.sleep(0.001)
                     continue
 
-                resized = cv2.resize(frame, (FRAME_W, FRAME_H))
+                resized = cast(Any, cv2.resize(frame, (FRAME_W, FRAME_H)))
 
                 with torch.no_grad():
                     results = self.model.track(

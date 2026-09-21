@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>KYROSHIX BOT — Login</title>
+
+<style>
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    background:
+        radial-gradient(circle at 20% 20%, #15152d 0, transparent 35%),
+        radial-gradient(circle at 80% 80%, #20123b 0, transparent 35%),
+        #07070d;
+
+    color: #fff;
+
+    font-family:
+        Inter,
+        "Segoe UI",
+        Arial,
+        sans-serif;
+}
+
+.card {
+    width: min(420px, calc(100% - 32px));
+
+    padding: 36px;
+
+    border-radius: 22px;
+
+    background: rgba(15, 15, 26, 0.90);
+
+    border: 1px solid rgba(140, 110, 255, 0.22);
+
+    box-shadow:
+        0 30px 80px rgba(0,0,0,.45),
+        0 0 40px rgba(110,80,255,.08);
+
+    backdrop-filter: blur(20px);
+}
+
+.logo {
+    text-align: center;
+    margin-bottom: 32px;
+}
+
+.logo h1 {
+    margin: 0;
+
+    font-size: 27px;
+    letter-spacing: 4px;
+}
+
+.logo span {
+    display: block;
+
+    margin-top: 8px;
+
+    color: #8f8fa6;
+
+    font-size: 12px;
+
+    letter-spacing: 2px;
+}
+
+label {
+    display: block;
+
+    margin: 18px 0 7px;
+
+    color: #a9a9bb;
+
+    font-size: 13px;
+}
+
+input {
+    width: 100%;
+
+    padding: 14px 15px;
+
+    border-radius: 10px;
+
+    border: 1px solid #29293d;
+
+    background: #10101b;
+
+    color: white;
+
+    outline: none;
+
+    font-size: 15px;
+}
+
+input:focus {
+    border-color: #795cff;
+
+    box-shadow:
+        0 0 0 3px rgba(121,92,255,.12);
+}
+
+button {
+    width: 100%;
+
+    margin-top: 25px;
+
+    padding: 14px;
+
+    border: 0;
+
+    border-radius: 10px;
+
+    background:
+        linear-gradient(135deg, #7357ff, #9a62ff);
+
+    color: white;
+
+    font-size: 14px;
+
+    font-weight: 700;
+
+    letter-spacing: 1px;
+
+    cursor: pointer;
+}
+
+button:hover {
+    filter: brightness(1.08);
+}
+
+.error {
+    display: none;
+
+    margin-top: 18px;
+
+    padding: 11px;
+
+    border-radius: 8px;
+
+    background: rgba(255,70,90,.10);
+
+    border: 1px solid rgba(255,70,90,.25);
+
+    color: #ff8794;
+
+    text-align: center;
+
+    font-size: 13px;
+}
+
+.footer {
+    margin-top: 25px;
+
+    text-align: center;
+
+    color: #55556b;
+
+    font-size: 11px;
+}
+</style>
+</head>
+
+<body>
+
+<div class="card">
+
+    <div class="logo">
+        <h1>KYROSHIX BOT</h1>
+        <span>SECURE CONTROL PANEL</span>
+    </div>
+
+    <form id="loginForm">
+
+        <label>USUÁRIO</label>
+
+        <input
+            id="username"
+            name="username"
+            autocomplete="username"
+            required
+        >
+
+        <label>SENHA</label>
+
+        <input
+            id="password"
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            required
+        >
+
+        <button type="submit">
+            ENTRAR
+        </button>
+
+    </form>
+
+    <div id="error" class="error">
+        Usuário ou senha incorretos.
+    </div>
+
+    <div class="footer">
+        KYROSHIX CORP • AUTHORIZED ACCESS ONLY
+    </div>
+
+</div>
+
+<script>
+const form = document.getElementById("loginForm");
+const errorBox = document.getElementById("error");
+
+form.addEventListener("submit", async (event) => {
+
+    event.preventDefault();
+
+    errorBox.style.display = "none";
+
+    const username =
+        document.getElementById("username").value;
+
+    const password =
+        document.getElementById("password").value;
+
+    try {
+
+        const response = await fetch("/auth/login", {
+            method: "POST",
+
+            headers: {
+                "Content-Type": "application/json"
+            },
+
+            credentials: "same-origin",
+
+            body: JSON.stringify({
+                username,
+                password
+            })
+        });
+
+        if (!response.ok) {
+            errorBox.style.display = "block";
+            return;
+        }
+
+        window.location.replace("/");
+
+    } catch (error) {
+
+        errorBox.textContent =
+            "Não foi possível conectar ao KYROSHIX BOT.";
+
+        errorBox.style.display = "block";
+    }
+});
+</script>
+
+</body>
+</html>

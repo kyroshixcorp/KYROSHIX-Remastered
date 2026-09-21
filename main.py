@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import logging
+import socket
 import time
 _BOOT_T0 = time.perf_counter()
 
@@ -59,6 +60,17 @@ def setup_control_server(session, audio, personality, memory, get_emotion_fn, co
         shared_state["get_emotion_fn"] = get_emotion_fn
         shared_state["config"] = config
         logger.info("Starting control panel on http://localhost:8766")
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                probe.bind(("0.0.0.0", 8766))
+        except OSError as exc:
+            logger.warning(
+                "Control panel port 8766 is already in use; "
+                "continuing without starting a second WebUI: %s",
+                exc,
+            )
+            return None
         config = uvicorn.Config(app, host="0.0.0.0", port=8766, log_level="warning")
         server = uvicorn.Server(config)
         server.install_signal_handlers = lambda: None  # Don't override main app's signals

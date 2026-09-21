@@ -1,4 +1,4 @@
-"""
+﻿"""
 ProjectGabriel - Onboarding Configurator
 Launches a web-based setup wizard that writes config.yml.
 Run after setup.bat installs dependencies.
@@ -513,7 +513,7 @@ def main():
         print("Error: onboarding/index.html not found.")
         sys.exit(1)
 
-    server = http.server.HTTPServer(("127.0.0.1", PORT), ConfigHandler)
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), ConfigHandler)
     url = f"http://127.0.0.1:{PORT}"
 
     print()
@@ -553,3 +553,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

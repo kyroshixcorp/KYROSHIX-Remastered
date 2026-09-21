@@ -1,4 +1,4 @@
-import gc
+﻿import gc
 import json
 import logging
 import random
@@ -19,11 +19,6 @@ FACE_MODEL_URL = "https://cdn.barricade.dev/raw/yolov8n-face.pt"
 # YOLO input frame.
 FRAME_W = 512
 FRAME_H = 288
-
-# Capturing a full 4K monitor through MSS is much more expensive than the
-# detector input needs. Keep the central 16:9 view at 1080p or below.
-MAX_CAPTURE_W = 1920
-MAX_CAPTURE_H = 1080
 
 # OSC/control loop target.
 TARGET_FPS = 60
@@ -108,11 +103,6 @@ class FaceTracker:
         self._last_capture_ms = 0.0
         self._last_resize_ms = 0.0
         self._last_inference_ms = 0.0
-
-        # WebUI Vision preview metrics.
-        self._vision_frame_count = 0
-        self._vision_fps = 0.0
-        self._vision_fps_timer = time.perf_counter()
 
         self._next_cache_cleanup = (
             time.perf_counter()
@@ -470,10 +460,6 @@ class FaceTracker:
 
         self._fps_timer = time.perf_counter()
 
-        self._vision_frame_count = 0
-        self._vision_fps = 0.0
-        self._vision_fps_timer = time.perf_counter()
-
     # ------------------------------------------------------------------
     # Screen capture
     # ------------------------------------------------------------------
@@ -519,14 +505,11 @@ class FaceTracker:
                 source["height"]
             )
 
-            # Keep a central 16:9 region, capped before MSS captures it.
-            scale = min(
-                1.0,
-                MAX_CAPTURE_W / source_w,
-                MAX_CAPTURE_H / source_h,
+            # Keep a central 16:9 region.
+            capture_w = source_w
+            capture_h = int(
+                capture_w * 9 / 16
             )
-            capture_w = int(source_w * scale)
-            capture_h = int(source_h * scale)
 
             if capture_h > source_h:
                 capture_h = source_h
@@ -841,12 +824,6 @@ class FaceTracker:
 
                         self._detection_count += 1
 
-                        # Publish the same YOLO frame to the WebUI.
-                        self._publish_vision_frame(
-                            resized,
-                            self._last_detections,
-                        )
-
                     last_detection_time = (
                         time.perf_counter()
                     )
@@ -1056,10 +1033,6 @@ class FaceTracker:
             detections.append(
                 {
                     "idx": i,
-                    "x1": x1,
-                    "y1": y1,
-                    "x2": x2,
-                    "y2": y2,
                     "cx": cx,
                     "cy": cy,
                     "norm_dx": norm_dx,
@@ -1071,96 +1044,6 @@ class FaceTracker:
             )
 
         return detections
-
-    def _publish_vision_frame(self, frame, detections):
-        """Publish annotated JPEG + tracker stats to the WebUI Vision tab."""
-        try:
-            import cv2
-            import vision_server
-
-            annotated = frame.copy()
-
-            target = None
-            if detections:
-                target = min(
-                    detections,
-                    key=lambda d: abs(
-                        d["norm_dx"] - self._smoothed_look_h
-                    ),
-                )
-
-            for det in detections:
-                x1 = max(0, min(FRAME_W - 1, int(det["x1"])))
-                y1 = max(0, min(FRAME_H - 1, int(det["y1"])))
-                x2 = max(0, min(FRAME_W - 1, int(det["x2"])))
-                y2 = max(0, min(FRAME_H - 1, int(det["y2"])))
-
-                is_target = target is det
-                color = (0, 255, 255) if is_target else (0, 255, 0)
-                thickness = 2 if is_target else 1
-
-                cv2.rectangle(
-                    annotated, (x1, y1), (x2, y2),
-                    color, thickness,
-                )
-                label = (
-                    f"{'TARGET ' if is_target else ''}"
-                    f"face {det['conf']:.2f}"
-                )
-                cv2.putText(
-                    annotated, label,
-                    (x1, max(14, y1 - 5)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.42, color, 1, cv2.LINE_AA,
-                )
-
-            cv2.drawMarker(
-                annotated,
-                (FRAME_W // 2, FRAME_H // 2),
-                (255, 255, 255),
-                markerType=cv2.MARKER_CROSS,
-                markerSize=12,
-                thickness=1,
-            )
-
-            ok, encoded = cv2.imencode(
-                ".jpg",
-                annotated,
-                [int(cv2.IMWRITE_JPEG_QUALITY), 75],
-            )
-            if not ok:
-                return
-
-            self._vision_frame_count += 1
-            now = time.perf_counter()
-            elapsed = now - self._vision_fps_timer
-            if elapsed >= 1.0:
-                self._vision_fps = self._vision_frame_count / elapsed
-                self._vision_frame_count = 0
-                self._vision_fps_timer = now
-
-            stats = {
-                "fps": round(self._vision_fps, 1),
-                "target_id": (
-                    int(target["idx"]) if target is not None else None
-                ),
-                "target_area": (
-                    float(target["area"]) if target is not None else 0.0
-                ),
-                "osc_look_h": float(self._smoothed_look_h),
-                "osc_forward": 0.0,
-                "osc_strafe": 0.0,
-                "sprinting": False,
-                "detections": len(detections),
-                "frame_w": int(annotated.shape[1]),
-                "frame_h": int(annotated.shape[0]),
-            }
-
-            vision_server.update_frame(encoded.tobytes(), stats)
-
-        except Exception as e:
-            # Never let the debug preview kill face tracking.
-            logger.debug(f"Vision preview publish skipped: {e}")
 
     def _score(
         self,

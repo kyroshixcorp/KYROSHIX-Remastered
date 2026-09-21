@@ -5,31 +5,25 @@ import os
 import re
 import time
 import warnings
-import shutil
-from pathlib import Path
-from urllib.parse import urlparse
-
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated", category=UserWarning)
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
-
 import pygame
 
 logger = logging.getLogger(__name__)
 
-MUSIC_FADEOUT_START = 2.0
-MUSIC_FADEOUT_END = 10.0
-
-AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac", ".wma"}
+MUSIC_FADEOUT_START = 2.0  # Start fading AI voice after this many seconds
+MUSIC_FADEOUT_END = 10.0   # AI voice completely muted after this many seconds
 
 
 class _PitchShifter:
-    """Pedalboard-based streaming pitch shifter."""
+    """Pedalboard-based streaming pitch shifter. Batches small chunks into
+    larger blocks for stable Rubber Band processing, with silence warmup
+    to keep the output buffer always filled."""
     _BLOCK = 4096
     _MAX_BUF = 20480
 
     def __init__(self, sample_rate=24000):
         from pedalboard import Pedalboard, PitchShift
-
         self.sample_rate = sample_rate
         self._semitones = 0.0
         self._shift = PitchShift(semitones=0.0)
@@ -51,7 +45,6 @@ class _PitchShifter:
 
     def reset(self):
         from pedalboard import Pedalboard, PitchShift
-
         self._shift = PitchShift(semitones=self._semitones)
         self._board = Pedalboard([self._shift])
         self._in_pending.clear()
@@ -64,12 +57,10 @@ class _PitchShifter:
         if semitones != self._semitones:
             self._semitones = semitones
             self._shift.semitones = semitones
-
         n = len(chunk)
         audio = chunk.astype(np.float32) / 32767.0
         self._in_pending.append(audio)
         self._in_len += len(audio)
-
         if self._in_len >= self._BLOCK:
             block = np.concatenate(self._in_pending)
             self._in_pending.clear()
@@ -78,37 +69,35 @@ class _PitchShifter:
             processed = result[0] * 32767.0
             self._out_parts.append(processed)
             self._out_ready += len(processed)
-
         if self._out_ready >= n:
             combined = np.concatenate(self._out_parts)
             drain = n
-
             if len(combined) > self._MAX_BUF:
                 extra = len(combined) - self._MAX_BUF
-                drain = min(n + extra, len(combined))
-
+                drain = n + extra
+                if drain > len(combined):
+                    drain = len(combined)
             out = combined[:drain]
-
             if drain != n:
                 x_old = np.linspace(0, 1, drain)
                 x_new = np.linspace(0, 1, n)
                 out = np.interp(x_new, x_old, out)
-
             leftover = combined[drain:]
-
             if len(leftover) > 0:
                 self._out_parts = [leftover]
                 self._out_ready = len(leftover)
             else:
                 self._out_parts.clear()
                 self._out_ready = 0
-
             return out
-
         return np.zeros(n, dtype=np.float32)
 
 
 class _ResamplingInputStream:
+    """Wraps a PyAudio input stream open at native_rate so callers can read at
+    target_rate. Used when the device wont open at the rate Gemini wants
+    (typically 16000 Hz), eg headsets that windows locks to 44100/48000."""
+
     def __init__(self, stream, native_rate, target_rate):
         self._stream = stream
         self._native_rate = native_rate
@@ -118,10 +107,8 @@ class _ResamplingInputStream:
         native_frames = int(round(num_frames * self._native_rate / self._target_rate))
         data = self._stream.read(native_frames, exception_on_overflow=exception_on_overflow)
         samples = np.frombuffer(data, dtype=np.int16)
-
         if self._native_rate == self._target_rate or len(samples) == 0:
             return data
-
         new_len = max(1, int(round(len(samples) * self._target_rate / self._native_rate)))
         x_old = np.arange(len(samples))
         x_new = np.linspace(0, len(samples) - 1, new_len)
@@ -139,6 +126,9 @@ class _ResamplingInputStream:
 
 
 class _ResamplingOutputStream:
+    """Wraps a PyAudio output stream open at native_rate so callers can write
+    target_rate audio. Mirror of _ResamplingInputStream for the speaker side."""
+
     def __init__(self, stream, native_rate, target_rate):
         self._stream = stream
         self._native_rate = native_rate
@@ -147,12 +137,9 @@ class _ResamplingOutputStream:
     def write(self, data, *args, **kwargs):
         if self._native_rate == self._target_rate or not data:
             return self._stream.write(data, *args, **kwargs)
-
         samples = np.frombuffer(data, dtype=np.int16)
-
         if len(samples) == 0:
             return self._stream.write(data, *args, **kwargs)
-
         new_len = max(1, int(round(len(samples) * self._native_rate / self._target_rate)))
         x_old = np.arange(len(samples))
         x_new = np.linspace(0, len(samples) - 1, new_len)
@@ -170,6 +157,8 @@ class _ResamplingOutputStream:
 
 
 def _is_invalid_sample_rate_error(exc: BaseException) -> bool:
+    """PortAudio reports paInvalidSampleRate as errno -9997. The OSError
+    string typically contains 'Invalid sample rate'. Match either."""
     if getattr(exc, "errno", None) == -9997:
         return True
     return "Invalid sample rate" in str(exc)
@@ -181,23 +170,23 @@ class AudioManager:
         self.pya = pyaudio.PyAudio()
         self.boost_level = 0
         self._music_start_time = None
-        self._music_paused_at = None
+        self._music_paused_at = None  # Track when paused for resume
         self._current_song_name = None
         self._current_song_duration = None
-        self._current_volume = 50
-        self._using_boosted_sound = False
-        self._boosted_sound_channel = None
-        self._lyrics = []
+        self._current_volume = 50  # Track current volume (0-300)
+        self._using_boosted_sound = False  # True if using boosted Sound instead of music
+        self._boosted_sound_channel = None  # Channel for boosted playback
+        self._lyrics = []  # Parsed SRT entries: [(start_sec, end_sec, text), ...]
         self._pygame_ready = False
-        self._thinking_sound = None
-        self._thinking_channel = None
+        self._thinking_sound = None  # Loaded thinking sound
+        self._thinking_channel = None  # Channel playing the thinking sound
         self._pitch_semitones = 0.0
         self._pitch_shifter = None
         self._low_quality = False
-        self._lq_downsample = 4
-        self._lq_bitcrush = 256.0
-        self._lq_noise = 800.0
-        self._lq_glitch = 0.03
+        self._lq_downsample = 4      # Downsample factor (2-8)
+        self._lq_bitcrush = 256.0    # Quantization step (64=harsh, 512=mild)
+        self._lq_noise = 800.0       # White noise intensity (0-3000)
+        self._lq_glitch = 0.03       # Glitch probability per chunk (0.0-0.2)
         self._external_music_active = False
         self._external_music_started_at: float | None = None
         self._setup_devices()
@@ -207,7 +196,6 @@ class AudioManager:
             self.input_device = self.config.input_device
         else:
             self.input_device = self.pya.get_default_input_device_info()["index"]
-
         if self.config.output_device is not None:
             self.output_device = self.config.output_device
         else:
@@ -221,7 +209,6 @@ class AudioManager:
 
     def open_input_stream(self):
         target_rate = self.config.send_sample_rate
-
         try:
             return self.pya.open(
                 format=pyaudio.paInt16,
@@ -234,7 +221,6 @@ class AudioManager:
         except OSError as e:
             if not _is_invalid_sample_rate_error(e):
                 raise
-
             try:
                 info = self.pya.get_device_info_by_index(self.input_device)
                 native_rate = int(info.get("defaultSampleRate", 48000))
@@ -242,17 +228,15 @@ class AudioManager:
             except Exception:
                 native_rate = 48000
                 dev_name = f"#{self.input_device}"
-
             if native_rate == target_rate:
                 native_rate = 48000
-
             native_chunk = int(round(self.config.chunk_size * native_rate / target_rate))
-
             logger.warning(
                 f"Mic '{dev_name}' wont open at {target_rate} Hz, "
-                f"falling back to {native_rate} Hz with software resampling."
+                f"falling back to {native_rate} Hz with software resampling. "
+                f"If audio sounds bad, set audio.input_device in config.yml to a "
+                f"device that natively supports {target_rate} Hz."
             )
-
             stream = self.pya.open(
                 format=pyaudio.paInt16,
                 channels=1,
@@ -265,7 +249,6 @@ class AudioManager:
 
     def open_output_stream(self):
         target_rate = self.config.receive_sample_rate
-
         try:
             return self.pya.open(
                 format=pyaudio.paInt16,
@@ -277,7 +260,6 @@ class AudioManager:
         except OSError as e:
             if not _is_invalid_sample_rate_error(e):
                 raise
-
             try:
                 info = self.pya.get_device_info_by_index(self.output_device)
                 native_rate = int(info.get("defaultSampleRate", 48000))
@@ -285,15 +267,14 @@ class AudioManager:
             except Exception:
                 native_rate = 48000
                 dev_name = f"#{self.output_device}"
-
             if native_rate == target_rate:
                 native_rate = 48000
-
             logger.warning(
                 f"Speaker '{dev_name}' wont open at {target_rate} Hz, "
-                f"falling back to {native_rate} Hz with software resampling."
+                f"falling back to {native_rate} Hz with software resampling. "
+                f"If audio sounds bad, set audio.output_device in config.yml to a "
+                f"device that natively supports {target_rate} Hz."
             )
-
             stream = self.pya.open(
                 format=pyaudio.paInt16,
                 channels=1,
@@ -304,6 +285,7 @@ class AudioManager:
             return _ResamplingOutputStream(stream, native_rate, target_rate)
 
     def is_music_playing(self) -> bool:
+        """Check if music is currently playing (pygame or an external source)."""
         if self._external_music_active:
             return True
         if not self._pygame_ready:
@@ -311,81 +293,83 @@ class AudioManager:
         return pygame.mixer.music.get_busy() or pygame.mixer.get_busy()
 
     def set_external_music_active(self, active: bool):
+        """Mark that an external music source is producing audio.
+        This makes is_music_playing() return True so the voice fade applies
+        and other systems (idle chatbox, animations) yield."""
         if active and not self._external_music_active:
             self._external_music_started_at = time.time()
             self._music_start_time = self._external_music_started_at
             self._music_paused_at = None
         elif not active and self._external_music_active:
-            if not (
-                self._pygame_ready
-                and (pygame.mixer.music.get_busy() or pygame.mixer.get_busy())
-            ):
+            # If only the external source was active, clear the start timer
+            if not (self._pygame_ready and (pygame.mixer.music.get_busy() or pygame.mixer.get_busy())):
                 self._music_start_time = None
             self._external_music_started_at = None
-
         self._external_music_active = active
 
     def get_voice_volume_multiplier(self) -> float:
+        """Get the volume multiplier for AI voice based on music playing state.
+        
+        Returns:
+            1.0 if no music playing
+            1.0 → 0.0 fading during first 10s of music
+            0.0 after 10s of music
+        """
         if not self.is_music_playing():
             if self._music_paused_at is None:
                 self._music_start_time = None
             return 1.0
-
+        
         if self._music_start_time is None:
-            return 1.0
-
+            return 1.0  # Music just started, wait for update
+        
         elapsed = time.time() - self._music_start_time
-
+        
         if elapsed < MUSIC_FADEOUT_START:
-            return 1.0
-        if elapsed >= MUSIC_FADEOUT_END:
-            return 0.0
-
-        fade_progress = (
-            (elapsed - MUSIC_FADEOUT_START)
-            / (MUSIC_FADEOUT_END - MUSIC_FADEOUT_START)
-        )
-        return 1.0 - fade_progress
+            return 1.0  # Full volume for first 2 seconds
+        elif elapsed >= MUSIC_FADEOUT_END:
+            return 0.0  # Muted after 10 seconds
+        else:
+            # Linear fade from 1.0 to 0.0 between 2s and 10s
+            fade_progress = (elapsed - MUSIC_FADEOUT_START) / (MUSIC_FADEOUT_END - MUSIC_FADEOUT_START)
+            return 1.0 - fade_progress
 
     def process_output_audio(self, data: bytes) -> bytes:
+        """Process AI voice output with boost/distortion and music fade."""
+        # Get volume multiplier based on music state
         voice_mult = self.get_voice_volume_multiplier()
-
+        
+        # If completely muted, return silence
         if voice_mult == 0.0:
-            return b"\x00" * len(data)
-
+            return b'\x00' * len(data)
+        
         samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
-
+        
+        # Apply boost if set
         if self.boost_level > 0:
             gain = 1.0 + (self.boost_level * 0.8)
             samples *= gain
-
-            if self.boost_level >= 3 and len(samples):
+            if self.boost_level >= 3:
                 alpha = 0.15 + (self.boost_level * 0.03)
                 boosted = np.zeros_like(samples)
                 boosted[0] = samples[0]
-
                 for i in range(1, len(samples)):
                     boosted[i] = alpha * samples[i] + (1 - alpha) * boosted[i - 1]
-
                 samples = samples + boosted * (self.boost_level * 0.3)
-
             if self.boost_level >= 2:
                 max_val = 32767.0
-                samples = np.tanh(
-                    samples / max_val * (1 + self.boost_level * 0.2)
-                ) * max_val
-
+                samples = np.tanh(samples / max_val * (1 + self.boost_level * 0.2)) * max_val
+        
+        # Apply music fade multiplier
         if voice_mult < 1.0:
             samples *= voice_mult
-
-        if (
-            self._pitch_semitones != 0.0
-            and self.config.get("audio", "pitch_shift", "enabled", default=False)
-        ):
+        
+        if self._pitch_semitones != 0.0 and self.config.get("audio", "pitch_shift", "enabled", default=False):
             if self._pitch_shifter is None:
                 self._pitch_shifter = _PitchShifter(self.config.receive_sample_rate)
             samples = self._pitch_shifter.process(samples, self._pitch_semitones)
 
+        # Low quality mic effect: downsample, bitcrush, noise, bandpass
         if self._low_quality:
             samples = self._apply_low_quality(samples)
 
@@ -395,10 +379,8 @@ class AudioManager:
     def set_pitch(self, semitones: float):
         max_st = self.config.get("audio", "pitch_shift", "max_semitones", default=12)
         self._pitch_semitones = max(-max_st, min(max_st, semitones))
-
         if self._pitch_shifter is not None:
             self._pitch_shifter.reset()
-
         logger.info(f"Voice pitch set to {self._pitch_semitones:+.1f} semitones")
 
     def get_pitch(self) -> float:
@@ -410,7 +392,6 @@ class AudioManager:
 
     def set_low_quality(self, enabled: bool, **kwargs):
         self._low_quality = enabled
-
         if "downsample" in kwargs:
             self._lq_downsample = max(1, min(8, int(kwargs["downsample"])))
         if "bitcrush" in kwargs:
@@ -419,16 +400,9 @@ class AudioManager:
             self._lq_noise = max(0.0, min(3000.0, float(kwargs["noise"])))
         if "glitch" in kwargs:
             self._lq_glitch = max(0.0, min(0.2, float(kwargs["glitch"])))
-
-        logger.info(
-            f"Low quality mic {'enabled' if enabled else 'disabled'}"
-            + (
-                f" (ds={self._lq_downsample}, bc={self._lq_bitcrush}, "
-                f"noise={self._lq_noise}, glitch={self._lq_glitch})"
-                if enabled
-                else ""
-            )
-        )
+        logger.info(f"Low quality mic {'enabled' if enabled else 'disabled'}"
+                     + (f" (ds={self._lq_downsample}, bc={self._lq_bitcrush}, "
+                        f"noise={self._lq_noise}, glitch={self._lq_glitch})" if enabled else ""))
 
     def get_low_quality(self) -> bool:
         return self._low_quality
@@ -443,275 +417,111 @@ class AudioManager:
         }
 
     def _apply_low_quality(self, samples: np.ndarray) -> np.ndarray:
-        if len(samples) == 0:
-            return samples
-
+        # Downsample then back up (bitcrushing/aliasing)
         factor = self._lq_downsample
         if factor > 1:
             downsampled = samples[::factor]
-            samples = np.repeat(downsampled, factor)[: len(samples)]
+            samples = np.repeat(downsampled, factor)[:len(samples)] if len(samples) > 0 else samples
 
+        # Bitcrush: reduce bit depth
         step = self._lq_bitcrush
         samples = np.round(samples / step) * step
 
+        # Add white noise
         if self._lq_noise > 0:
-            noise = np.random.normal(
-                0, self._lq_noise, len(samples)
-            ).astype(np.float32)
+            noise = np.random.normal(0, self._lq_noise, len(samples)).astype(np.float32)
             samples = samples + noise
 
+        # Simple bandpass via high-pass + low-pass (telephone band ~300-3400Hz)
+        # Single-pole IIR filters for cheapness
         sr = self.config.receive_sample_rate
-
+        # High-pass ~300Hz
         rc_hp = 1.0 / (2.0 * np.pi * 300.0)
         alpha_hp = rc_hp / (rc_hp + 1.0 / sr)
         hp_out = np.zeros_like(samples)
         prev_in = samples[0]
         prev_out = samples[0]
-
         for i in range(1, len(samples)):
             prev_out = alpha_hp * (prev_out + samples[i] - prev_in)
             prev_in = samples[i]
             hp_out[i] = prev_out
-
+        # Low-pass ~3400Hz
         rc_lp = 1.0 / (2.0 * np.pi * 3400.0)
         alpha_lp = (1.0 / sr) / (rc_lp + 1.0 / sr)
         lp_out = np.zeros_like(hp_out)
         lp_out[0] = hp_out[0]
-
         for i in range(1, len(hp_out)):
             lp_out[i] = lp_out[i - 1] + alpha_lp * (hp_out[i] - lp_out[i - 1])
 
-        if (
-            self._lq_glitch > 0
-            and np.random.random() < self._lq_glitch
-            and len(lp_out) > 200
-        ):
+        # Random micro-glitches: occasionally repeat a small chunk
+        if self._lq_glitch > 0 and np.random.random() < self._lq_glitch and len(lp_out) > 200:
             pos = np.random.randint(0, len(lp_out) - 100)
-            lp_out[pos : pos + 50] = lp_out[pos : pos + 50][[0] * 50]
+            lp_out[pos:pos + 50] = lp_out[pos:pos + 50][[0] * 50]  # stutter
 
         return lp_out
 
-    # ------------------------------------------------------------------
-    # Music library / resolving
-    # ------------------------------------------------------------------
-
     def list_music(self) -> list[str]:
+        from pathlib import Path
         music_dir = Path(self.config.music_dir)
-        music_dir.mkdir(parents=True, exist_ok=True)
-
+        if not music_dir.exists():
+            music_dir.mkdir(parents=True, exist_ok=True)
+            return []
+        exts = {".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac", ".wma"}
         files = []
-
         for filepath in music_dir.rglob("*"):
-            if filepath.is_file() and filepath.suffix.lower() in AUDIO_EXTENSIONS:
-                files.append(str(filepath.relative_to(music_dir)))
-
-        return sorted(files, key=str.casefold)
-
-    @staticmethod
-    def _normalize_music_text(value: str) -> str:
-        value = os.path.splitext(os.path.basename(value))[0]
-        value = value.casefold()
-        value = re.sub(r"\[[^\]]+\]", " ", value)
-        value = re.sub(r"[_\-–—|]+", " ", value)
-        value = re.sub(r"[^\w\s]", " ", value, flags=re.UNICODE)
-        return " ".join(value.split())
-
-    def find_local_music(self, query: str) -> str | None:
-        """Find the best local song match without requiring the exact filename."""
-        query_norm = self._normalize_music_text(query)
-
-        if not query_norm:
-            return None
-
-        songs = self.list_music()
-
-        # Exact normalized match first.
-        for song in songs:
-            if self._normalize_music_text(song) == query_norm:
-                return song
-
-        # Then substring/token matching.
-        query_tokens = set(query_norm.split())
-        best_song = None
-        best_score = 0.0
-
-        for song in songs:
-            song_norm = self._normalize_music_text(song)
-
-            if query_norm in song_norm:
-                return song
-
-            song_tokens = set(song_norm.split())
-
-            if not query_tokens:
-                continue
-
-            overlap = len(query_tokens & song_tokens) / len(query_tokens)
-
-            if overlap > best_score:
-                best_score = overlap
-                best_song = song
-
-        return best_song if best_score >= 0.6 else None
-
-    def play_music_request(self, request: str, volume: int = 50) -> dict:
-        """
-        Unified music entry point.
-
-        Accepts:
-          - local filename/path
-          - HTTP/HTTPS media URL
-          - natural song/artist search text
-
-        This is the method the voice/chat tool should call.
-        """
-        if not isinstance(request, str) or not request.strip():
-            return {
-                "result": "error",
-                "message": "Music request is empty",
-            }
-
-        request = request.strip()
-        volume = self._clamp_music_volume(volume)
-
-        if self._is_http_url(request):
-            return self.play_music_url(request, volume)
-
-        local_match = self.find_local_music(request)
-
-        if local_match:
-            if self.play_music(local_match, volume):
-                return {
-                    "result": "ok",
-                    "message": "playing",
-                    "title": os.path.splitext(os.path.basename(local_match))[0],
-                    "filename": local_match,
-                    "source": "local",
-                    "volume": volume,
-                }
-
-            return {
-                "result": "error",
-                "message": f"Local song was found but playback failed: {local_match}",
-            }
-
-        return self.search_and_play_music(request, volume)
-
-    def search_and_play_music(self, query: str, volume: int = 50) -> dict:
-        """
-        Search YouTube by song/artist name, then download/cache audio and play it.
-
-        Example:
-            search_and_play_music("Bebe Rexha Heart Still Beating")
-        """
-        query = str(query or "").strip()
-
-        if not query:
-            return {
-                "result": "error",
-                "message": "Search query is empty",
-            }
-
-        # ytsearch1 is an official yt-dlp search prefix.
-        return self._download_and_play_music(
-            f"ytsearch1:{query}",
-            volume=volume,
-            original_request=query,
-            source_kind="search",
-        )
+            if filepath.is_file() and filepath.suffix.lower() in exts:
+                rel_path = filepath.relative_to(music_dir)
+                files.append(str(rel_path))
+        return sorted(files)
 
     def play_music(self, filename: str, volume: int = 50) -> bool:
         self._setup_pygame()
-
-        music_dir = Path(self.config.music_dir).resolve()
-        filepath = (music_dir / filename).resolve()
-
-        # Do not allow ../ to escape the configured music directory.
-        try:
-            filepath.relative_to(music_dir)
-        except ValueError:
-            logger.error(f"Refusing music path outside music directory: {filepath}")
+        filepath = os.path.join(self.config.music_dir, filename)
+        if not os.path.exists(filepath):
             return False
-
-        if not filepath.exists() or not filepath.is_file():
-            logger.warning(f"Music file not found: {filepath}")
-            return False
-
         try:
-            self.stop_music()
-
-            self._current_volume = self._clamp_music_volume(volume)
+            self._current_volume = min(max(0, volume), 300)
             vol_float = self._current_volume / 100.0
             self._music_start_time = time.time()
             self._music_paused_at = None
-            self._current_song_name = filepath.stem
-            self._current_song_duration = self._get_audio_duration(str(filepath))
-            self._lyrics = self._load_srt(str(filepath.relative_to(music_dir)))
-
+            
+            # Store song name without extension
+            self._current_song_name = os.path.splitext(os.path.basename(filename))[0]
+            
+            # Try to get duration using mutagen
+            self._current_song_duration = self._get_audio_duration(filepath)
+            
+            # Load matching SRT lyrics
+            self._lyrics = self._load_srt(filename)
+            
             if vol_float <= 1.0:
                 self._using_boosted_sound = False
                 self._boosted_sound_channel = None
-                pygame.mixer.music.load(str(filepath))
+                pygame.mixer.music.load(filepath)
                 pygame.mixer.music.set_volume(vol_float)
                 pygame.mixer.music.play()
             else:
                 self._using_boosted_sound = True
-                sound = pygame.mixer.Sound(str(filepath))
+                sound = pygame.mixer.Sound(filepath)
                 arr = pygame.sndarray.array(sound)
-                arr = (
-                    arr.astype(np.float32) * vol_float
-                ).clip(-32767, 32767).astype(np.int16)
+                arr = (arr.astype(np.float32) * vol_float).clip(-32767, 32767).astype(np.int16)
                 boosted = pygame.sndarray.make_sound(arr)
                 self._boosted_sound_channel = boosted.play()
-
-            logger.info(
-                f"Playing music: {filename} "
-                f"(duration: {self._current_song_duration:.1f}s, "
-                f"volume: {self._current_volume}%)"
-            )
+            logger.info(f"Playing music: {filename} (duration: {self._current_song_duration:.1f}s)")
             return True
-
         except Exception as e:
-            self._clear_music_state()
-            logger.exception(f"Music playback failed for {filepath}: {e}")
+            self._music_start_time = None
+            self._music_paused_at = None
+            self._current_song_name = None
+            self._current_song_duration = None
+            self._lyrics = []
+            logger.error(f"Music playback failed: {e}")
             return False
 
     def play_music_url(self, url: str, volume: int = 50) -> dict:
-        """Resolve a supported public media URL, cache its audio, and play it."""
-        if not isinstance(url, str):
-            return {
-                "result": "error",
-                "message": "Invalid URL",
-            }
+        """Download audio from a supported URL using yt-dlp and play it."""
+        from pathlib import Path
 
-        url = url.strip()
-
-        if not self._is_http_url(url):
-            return {
-                "result": "error",
-                "message": "Invalid URL. Use an http:// or https:// address.",
-            }
-
-        return self._download_and_play_music(
-            url,
-            volume=volume,
-            original_request=url,
-            source_kind="url",
-        )
-
-    def _download_and_play_music(
-        self,
-        target: str,
-        volume: int = 50,
-        original_request: str | None = None,
-        source_kind: str = "url",
-    ) -> dict:
-        """
-        yt-dlp backend shared by URL playback and text search.
-
-        Downloads audio only, converts to MP3, reuses cached media IDs, then
-        hands playback to the existing pygame music path.
-        """
         try:
             import yt_dlp
         except ImportError:
@@ -721,32 +531,37 @@ class AudioManager:
                 "message": "yt-dlp is not installed",
             }
 
-        if shutil.which("ffmpeg") is None:
+        if not isinstance(url, str):
             return {
                 "result": "error",
-                "message": "FFmpeg was not found in PATH",
+                "message": "Invalid URL",
             }
 
-        volume = self._clamp_music_volume(volume)
+        url = url.strip()
+
+        if not url.lower().startswith(("http://", "https://")):
+            return {
+                "result": "error",
+                "message": "Invalid URL. URL must start with http:// or https://",
+            }
 
         music_dir = Path(self.config.music_dir).resolve()
         music_dir.mkdir(parents=True, exist_ok=True)
 
-        cache_dir = (music_dir / "url_cache").resolve()
+        cache_dir = music_dir / "url_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"Resolving music URL: {url}")
 
         ydl_opts = {
             "format": "bestaudio/best",
             "noplaylist": True,
-            "outtmpl": str(cache_dir / "%(title).120B [%(id)s].%(ext)s"),
-            "windowsfilenames": True,
-            "overwrites": False,
-            "continuedl": True,
-            "retries": 5,
-            "fragment_retries": 5,
-            "socket_timeout": 30,
-            "quiet": True,
+            "outtmpl": str(
+                cache_dir / "%(title).150B [%(id)s].%(ext)s"
+            ),
+            "quiet": False,
             "no_warnings": False,
+            "overwrites": False,
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",
@@ -756,310 +571,203 @@ class AudioManager:
             ],
         }
 
-        logger.info(f"Resolving music {source_kind}: {original_request or target}")
-
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                # Resolve first so a cached ID can be reused without downloading.
-                info = ydl.extract_info(target, download=False)
-                info = self._first_media_entry(info)
+                info = ydl.extract_info(url, download=True)
 
-                if not info:
+                if info is None:
                     return {
                         "result": "error",
-                        "message": "No playable media was found",
+                        "message": "yt-dlp could not obtain information from this URL",
                     }
 
-                media_id = str(info.get("id") or "").strip()
-                title = str(info.get("title") or "Online Music").strip()
-                webpage_url = str(
-                    info.get("webpage_url")
-                    or info.get("original_url")
-                    or original_request
-                    or target
-                )
-                extractor = str(
-                    info.get("extractor_key")
-                    or info.get("extractor")
-                    or "unknown"
-                )
-                duration = info.get("duration")
+                if "entries" in info:
+                    entries = [
+                        entry
+                        for entry in (info.get("entries") or [])
+                        if entry
+                    ]
 
-                final_path = self._find_cached_media(cache_dir, media_id)
-
-                if final_path is not None:
-                    logger.info(f"Music cache hit: {title} -> {final_path.name}")
-                else:
-                    logger.info(f"Music cache miss: downloading audio for {title}")
-
-                    info = ydl.extract_info(target, download=True)
-                    info = self._first_media_entry(info)
-
-                    if not info:
+                    if not entries:
                         return {
                             "result": "error",
-                            "message": "yt-dlp downloaded no playable media",
+                            "message": "No playable media was found at this URL",
                         }
 
-                    media_id = str(info.get("id") or media_id).strip()
-                    title = str(info.get("title") or title).strip()
-                    webpage_url = str(
-                        info.get("webpage_url")
-                        or info.get("original_url")
-                        or webpage_url
-                    )
-                    extractor = str(
-                        info.get("extractor_key")
-                        or info.get("extractor")
-                        or extractor
-                    )
-                    duration = info.get("duration") or duration
+                    info = entries[0]
 
-                    downloaded_path = Path(ydl.prepare_filename(info))
-                    expected_mp3 = downloaded_path.with_suffix(".mp3")
+                title = info.get("title") or "Online Music"
 
-                    if expected_mp3.exists():
-                        final_path = expected_mp3.resolve()
-                    elif (
-                        downloaded_path.exists()
-                        and downloaded_path.suffix.lower() == ".mp3"
-                    ):
-                        final_path = downloaded_path.resolve()
-                    else:
-                        final_path = self._find_cached_media(cache_dir, media_id)
+                downloaded_path = Path(
+                    ydl.prepare_filename(info)
+                )
 
-                    if final_path is None:
-                        return {
-                            "result": "error",
-                            "message": (
-                                "Audio was downloaded, but the converted MP3 "
-                                "could not be found"
-                            ),
-                        }
+            final_path = downloaded_path.with_suffix(".mp3")
 
-                    logger.info(f"URL music downloaded: {title} -> {final_path.name}")
+            if not final_path.exists() and downloaded_path.exists():
+                if downloaded_path.suffix.lower() == ".mp3":
+                    final_path = downloaded_path
+
+            if not final_path.exists():
+                logger.error(
+                    f"Downloaded audio file was not found: {final_path}"
+                )
+
+                return {
+                    "result": "error",
+                    "message": "Converted MP3 file could not be found",
+                }
 
             try:
                 relative_path = final_path.resolve().relative_to(music_dir)
             except ValueError:
-                logger.error(f"Downloaded file is outside music directory: {final_path}")
+                logger.error(
+                    f"Downloaded file is outside music directory: {final_path}"
+                )
+
                 return {
                     "result": "error",
                     "message": "Downloaded file is outside music directory",
                 }
 
-            if not self.play_music(str(relative_path), volume):
+            logger.info(
+                f"URL music downloaded: {title} -> {relative_path}"
+            )
+
+            played = self.play_music(
+                str(relative_path),
+                volume
+            )
+
+            if not played:
                 return {
                     "result": "error",
-                    "message": "Audio resolved successfully but playback failed",
+                    "message": "Audio downloaded but playback failed",
                 }
 
-            result = {
+            logger.info(f"Playing URL music: {title}")
+
+            return {
                 "result": "ok",
                 "message": "playing",
                 "title": title,
                 "filename": str(relative_path),
-                "source_url": webpage_url,
-                "source": source_kind,
-                "extractor": extractor,
-                "volume": volume,
+                "source_url": url,
             }
-
-            if duration is not None:
-                try:
-                    result["duration"] = float(duration)
-                except (TypeError, ValueError):
-                    pass
-
-            logger.info(
-                f"Playing resolved music: {title} "
-                f"(source={source_kind}, extractor={extractor})"
-            )
-            return result
 
         except yt_dlp.utils.DownloadError as e:
-            logger.error(f"yt-dlp failed for {target}: {e}")
+            logger.error(f"yt-dlp download failed: {e}")
+
             return {
                 "result": "error",
-                "message": f"Could not resolve/download media: {e}",
+                "message": f"Could not download media: {e}",
             }
+
         except Exception as e:
-            logger.exception(f"Music resolution failed for {target}")
+            logger.exception(
+                f"URL music playback failed for {url}"
+            )
+
             return {
                 "result": "error",
                 "message": str(e),
             }
 
-    @staticmethod
-    def _first_media_entry(info):
-        """Return the first playable item from yt-dlp search/playlist-like results."""
-        if not info:
-            return None
-
-        if "entries" not in info:
-            return info
-
-        for entry in info.get("entries") or []:
-            if entry:
-                return entry
-
-        return None
-
-    @staticmethod
-    def _find_cached_media(cache_dir: Path, media_id: str) -> Path | None:
-        if not media_id:
-            return None
-
-        # Escape glob metacharacters from arbitrary extractor IDs.
-        safe_id = (
-            media_id.replace("[", "[[]")
-            .replace("]", "[]]")
-            .replace("*", "[*]")
-            .replace("?", "[?]")
-        )
-
-        matches = list(cache_dir.glob(f"*[{safe_id}].mp3"))
-
-        if matches:
-            return matches[0].resolve()
-
-        # Robust fallback if glob escaping behaves differently on Windows.
-        suffix = f"[{media_id}].mp3".casefold()
-
-        for candidate in cache_dir.glob("*.mp3"):
-            if candidate.name.casefold().endswith(suffix):
-                return candidate.resolve()
-
-        return None
-
-    @staticmethod
-    def _is_http_url(value: str) -> bool:
-        try:
-            parsed = urlparse(value.strip())
-            return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc)
-        except Exception:
-            return False
-
-    @staticmethod
-    def _clamp_music_volume(volume: int) -> int:
-        try:
-            return max(0, min(300, int(volume)))
-        except (TypeError, ValueError):
-            return 50
-
-    def _clear_music_state(self):
-        self._music_start_time = None
-        self._music_paused_at = None
-        self._current_song_name = None
-        self._current_song_duration = None
-        self._using_boosted_sound = False
-        self._boosted_sound_channel = None
-        self._lyrics = []
-
     def _get_audio_duration(self, filepath: str) -> float:
+        """Get audio file duration in seconds."""
         try:
             from mutagen import File
-
             audio = File(filepath)
             if audio is not None and audio.info is not None:
                 return audio.info.length
         except Exception:
             pass
-
+        
+        # Fallback: try pygame.mixer.Sound for shorter files
         try:
             self._setup_pygame()
             sound = pygame.mixer.Sound(filepath)
             return sound.get_length()
         except Exception:
             pass
-
+        
         return 0.0
 
     def _parse_srt_time(self, ts: str) -> float:
+        """Parse SRT timestamp (HH:MM:SS,mmm) to seconds."""
         m = re.match(r"(\d+):(\d+):(\d+)[,.](\d+)", ts.strip())
-
         if not m:
             return 0.0
-
-        h, mi, s, ms = (
-            int(m.group(1)),
-            int(m.group(2)),
-            int(m.group(3)),
-            int(m.group(4)),
-        )
+        h, mi, s, ms = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
         return h * 3600 + mi * 60 + s + ms / 1000.0
 
     def _load_srt(self, music_filename: str) -> list:
+        """Load matching .srt from sfx/music/srt/ for the given music file."""
+        from pathlib import Path
         stem = Path(music_filename).stem
         srt_path = Path(self.config.music_dir) / "srt" / f"{stem}.srt"
-
         if not srt_path.exists():
             return []
-
         try:
             text = srt_path.read_text(encoding="utf-8")
             entries = []
             blocks = re.split(r"\n\s*\n", text.strip())
-
             for block in blocks:
                 lines = block.strip().split("\n")
-
                 if len(lines) < 3:
                     continue
-
-                arrow = re.split(r"\s*-->\s*", lines[1])
-
+                time_line = lines[1]
+                arrow = re.split(r"\s*-->\s*", time_line)
                 if len(arrow) != 2:
                     continue
-
                 start = self._parse_srt_time(arrow[0])
                 end = self._parse_srt_time(arrow[1])
                 lyric = " ".join(lines[2:]).strip()
-
                 if lyric:
                     entries.append((start, end, lyric))
-
             if entries:
                 logger.info(f"Loaded {len(entries)} lyric entries from {srt_path.name}")
-
             return entries
-
         except Exception as e:
             logger.warning(f"Failed to load SRT {srt_path}: {e}")
             return []
 
     def get_current_lyric(self) -> str | None:
+        """Get the lyric line for the current playback position, or None."""
         if not self._lyrics or self._music_start_time is None:
             return None
-
         if self._music_paused_at is not None:
             pos = self._music_paused_at - self._music_start_time
         else:
             pos = time.time() - self._music_start_time
-
         for start, end, text in self._lyrics:
             if start <= pos < end:
                 return text
-
         return None
 
     def get_music_progress(self) -> dict | None:
+        """Get current music playback status.
+        
+        Returns:
+            dict with keys: name, position, duration, progress (0.0-1.0)
+            or None if no music playing (or only an external source)
+        """
         if self._music_start_time is None:
             return None
-
+        # External-only music reports progress via its own manager
         if self._external_music_active and self._current_song_name is None:
             return None
-
+        
+        # Handle paused state
         if self._music_paused_at is not None:
             position = self._music_paused_at - self._music_start_time
         elif not self.is_music_playing():
             return None
         else:
             position = time.time() - self._music_start_time
-
         duration = self._current_song_duration or 0.0
         progress = (position / duration) if duration > 0 else 0.0
-
+        
         return {
             "song_name": self._current_song_name or "Unknown",
             "position": position,
@@ -1068,164 +776,151 @@ class AudioManager:
         }
 
     def stop_music(self):
-        if self._pygame_ready:
-            pygame.mixer.music.stop()
-            pygame.mixer.stop()
-
-        self._clear_music_state()
+        if not self._pygame_ready:
+            return
+        pygame.mixer.music.stop()
+        pygame.mixer.stop()
+        self._music_start_time = None
+        self._music_paused_at = None
+        self._current_song_name = None
+        self._current_song_duration = None
+        self._using_boosted_sound = False
+        self._boosted_sound_channel = None
+        self._lyrics = []
 
     def pause_music(self) -> bool:
-        if self._music_paused_at is not None:
-            return False
-
+        """Pause currently playing music. Returns False if nothing is playing."""
         if not self.is_music_playing():
             return False
-
+        
         if self._using_boosted_sound:
             if self._boosted_sound_channel:
                 self._boosted_sound_channel.pause()
         else:
             pygame.mixer.music.pause()
-
+        
+        # Track pause time for accurate progress
         if self._music_start_time:
             self._music_paused_at = time.time()
-
+        
         logger.info("Music paused")
         return True
 
     def resume_music(self) -> bool:
+        """Resume paused music. Returns False if nothing is paused."""
         if self._music_paused_at is None:
             return False
-
+        
         if self._using_boosted_sound:
             if self._boosted_sound_channel:
                 self._boosted_sound_channel.unpause()
         else:
             pygame.mixer.music.unpause()
-
-        if self._music_start_time:
+        
+        # Adjust start time to account for pause duration
+        if self._music_start_time and self._music_paused_at:
             pause_duration = time.time() - self._music_paused_at
             self._music_start_time += pause_duration
-
+        
         self._music_paused_at = None
         logger.info("Music resumed")
         return True
 
     def set_music_volume(self, volume: int) -> bool:
+        """Set music volume while playing (0-300). Returns False if nothing playing."""
         if not self.is_music_playing() and self._music_paused_at is None:
             return False
-
-        self._current_volume = self._clamp_music_volume(volume)
+        
+        self._current_volume = min(max(0, volume), 300)
         vol_float = self._current_volume / 100.0
-
+        
+        # Note: For boosted mode (>100%), volume can only be changed at start
+        # For normal mode, we can adjust in real-time
         if not self._using_boosted_sound:
             pygame.mixer.music.set_volume(min(vol_float, 1.0))
             logger.info(f"Music volume set to {self._current_volume}%")
             return True
-
-        logger.info(
-            f"Volume change requested to {self._current_volume}% "
-            "(boosted mode - takes full effect on the next playback)"
-        )
-        return True
+        else:
+            # For boosted mode, volume changes aren't fully supported mid-playback
+            logger.info(f"Volume change requested to {self._current_volume}% (boosted mode - limited support)")
+            return True
 
     def play_sfx_file(self, filepath: str, boost: int = 0) -> bool:
         self._setup_pygame()
-
         try:
             sound = pygame.mixer.Sound(filepath)
-
             if boost > 0:
+                import numpy as np
                 raw = pygame.sndarray.array(sound)
                 samples = raw.astype(np.float32)
                 gain = 1.0 + (boost * 0.8)
                 samples *= gain
-
-                if boost >= 3 and len(samples):
+                if boost >= 3:
                     alpha = 0.15 + (boost * 0.03)
                     bass = np.zeros_like(samples)
                     bass[0] = samples[0]
-
                     for i in range(1, len(samples)):
                         bass[i] = alpha * samples[i] + (1 - alpha) * bass[i - 1]
-
                     samples = samples + bass * (boost * 0.3)
-
                 if boost >= 2:
                     max_val = 32767.0
-                    samples = np.tanh(
-                        samples / max_val * (1 + boost * 0.2)
-                    ) * max_val
-
+                    samples = np.tanh(samples / max_val * (1 + boost * 0.2)) * max_val
                 samples = np.clip(samples, -32767, 32767).astype(np.int16)
                 sound = pygame.sndarray.make_sound(samples)
                 logger.info(f"SFX boost applied: level {boost}")
-
             sound.play()
             return True
-
         except Exception as e:
             logger.error(f"SFX playback failed: {e}")
             return False
 
     def stop_sfx(self):
+        """Stop all currently playing sound effects."""
         if not self._pygame_ready:
             return
-
         pygame.mixer.stop()
         self._thinking_channel = None
         logger.info("All SFX playback stopped")
 
     def start_thinking_sound(self, source="thinking"):
+        """Start playing the thinking sound effect with fade-in (looping).
+        
+        Args:
+            source: "thinking" or "recall" -- checked against on_thinking/on_recall config.
+        """
         if not self.config.thinking_sound_enabled:
             return
         if source == "thinking" and not self.config.thinking_sound_on_thinking:
             return
         if source == "recall" and not self.config.thinking_sound_on_recall:
             return
-
         self._setup_pygame()
         filepath = self.config.thinking_sound_file
-
         if not os.path.exists(filepath):
             logger.warning(f"Thinking sound file not found: {filepath}")
             return
-
         if self._thinking_channel and self._thinking_channel.get_busy():
-            return
-
+            return  # Already playing
         try:
             if self._thinking_sound is None:
                 self._thinking_sound = pygame.mixer.Sound(filepath)
-
             vol = min(max(0, self.config.thinking_sound_volume), 100) / 100.0
             self._thinking_sound.set_volume(vol)
             fade_in = self.config.thinking_sound_fade_in_ms
-            self._thinking_channel = self._thinking_sound.play(
-                loops=-1,
-                fade_ms=fade_in,
-            )
+            self._thinking_channel = self._thinking_sound.play(loops=-1, fade_ms=fade_in)
             logger.debug("Thinking sound started")
-
         except Exception as e:
             logger.error(f"Failed to start thinking sound: {e}")
 
     def stop_thinking_sound(self):
+        """Stop the thinking sound effect with fade-out."""
         if self._thinking_channel and self._thinking_channel.get_busy():
-            fade_out = (
-                self.config.thinking_sound_fade_out_ms
-                if self.config.thinking_sound_enabled
-                else 800
-            )
+            fade_out = self.config.thinking_sound_fade_out_ms if self.config.thinking_sound_enabled else 800
             self._thinking_channel.fadeout(fade_out)
             self._thinking_channel = None
             logger.debug("Thinking sound stopping (fade out)")
 
     def cleanup(self):
-        self.stop_music()
-
         if self._pygame_ready:
             pygame.mixer.quit()
-            self._pygame_ready = False
-
         self.pya.terminate()

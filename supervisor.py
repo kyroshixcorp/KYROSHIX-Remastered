@@ -139,6 +139,20 @@ class ProcessSupervisor:
         print(f"  {_CYAN}\u255a{'\u2550' * W}\u255d{_RST}")
         print()
         
+        # KYROSHIX BOT: request the configured VRChat world/instance before
+        # starting the AI. This launcher stores no VRChat credentials.
+        try:
+            _sup("Opening configured VRChat instance...", _CYAN)
+            autojoin = subprocess.run(
+                [str(VENV_PYTHON), "vrchat_autojoin.py"],
+                cwd=str(PROJECT_ROOT),
+                check=False,
+            )
+            if autojoin.returncode != 0:
+                _sup("VRChat autojoin returned an error; starting AI anyway.", _YELLOW)
+        except Exception as e:
+            _sup(f"VRChat autojoin error: {e}; starting AI anyway.", _YELLOW)
+
         # Start main application (control panel is started within main.py)
         main_thread = self.start_process("main", "main.py", restart_on_exit=True)
         
