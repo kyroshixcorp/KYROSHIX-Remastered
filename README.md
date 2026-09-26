@@ -97,6 +97,47 @@ The WebUI is at **http://localhost:8766** once running.
 - **Python 3.11 or 3.12.** The setup script auto-downloads 3.12 if needed. 3.13+ is not supported.
 - **VRChat** on the same machine, with OSC enabled in the action menu.
 
+### Arch Linux with Docker
+
+The container runs Gabriel headlessly. Install Docker Engine and the Compose
+plugin, start Docker, and make sure PipeWire's PulseAudio socket is available:
+
+```sh
+sudo pacman -S docker docker-compose pipewire-pulse
+sudo systemctl enable --now docker
+systemctl --user enable --now pipewire pipewire-pulse
+sudo loginctl enable-linger "$USER"
+sudo usermod -aG docker "$USER"
+cp .env.example .env
+```
+
+Log out and back in after adding yourself to the `docker` group if Docker
+commands report a permission error.
+
+Edit `.env` if your user ID, group ID, or PulseAudio socket differs from the
+defaults. Then prepare the private config and launch:
+
+```sh
+cp config.yml.example config.yml
+cp config/prompts/prompts.yml.example config/prompts/prompts.yml
+cp config/prompts/appends.yml.example config/prompts/appends.yml
+cp config/prompts/personalities.yml.example config/prompts/personalities.yml
+docker compose up -d --build
+docker compose logs -f
+```
+
+Set `gemini.api_key` in `config.yml`. Disable `yolo.enabled` and leave
+`face_tracker.enabled` false: a headless container cannot capture the desktop.
+OSC uses the host network, so the default `127.0.0.1` destination reaches
+VRChat on this Arch machine. The WebUI is available at
+**http://localhost:8766**. Docker restarts the app after a crash and keeps
+configuration, memory, models, plugins, and sound files in the mounted folders.
+
+Keyboard crouch/crawl and screen capture are unavailable in this headless
+setup. Voice input/output requires the host PipeWire PulseAudio service. For
+NVIDIA inference, install and configure the NVIDIA Container Toolkit, then
+uncomment `gpus: all` in `docker-compose.yml`; CPU operation is the default.
+
 ---
 
 ## Audio Routing
@@ -302,7 +343,10 @@ VRChat's chatbox has a 144 character hard limit. Gabriel auto-paginates with `(1
 <details>
 <summary><strong>"Can I run this on Linux?"</strong></summary>
 
-The project targets Windows first. Some things will work on Linux (Python code, Discord bot, social server) but OSC routing, audio device enumeration, pynput keyboard control, and the screen capture for YOLO are all Windows-specific at the moment. PRs welcome.
+The project targets Windows first. On Linux, the Docker setup supports the
+headless Gemini/OSC workflow with host audio forwarding. Desktop capture and
+keyboard injection are not available in that container setup. For the
+supported Arch configuration, see [Arch Linux with Docker](#arch-linux-with-docker).
 
 </details>
 

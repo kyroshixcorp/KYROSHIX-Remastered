@@ -1,0 +1,21 @@
+services:
+  gabriel:
+    build: .
+    init: true
+    restart: unless-stopped
+    network_mode: host
+    user: "${GABRIEL_UID:-1000}:${GABRIEL_GID:-1000}"
+    environment:
+      PULSE_SERVER: unix:/run/pulse/native
+      SDL_AUDIODRIVER: pulse
+      HF_HOME: /app/data/huggingface
+    volumes:
+      - ./config.yml:/app/config.yml:ro
+      - ./config:/app/config
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./plugins:/app/plugins
+      - ./sfx:/app/sfx
+      - ${PULSE_SOCKET:-/run/user/1000/pulse/native}:/run/pulse/native:ro
+    # Uncomment when Docker has the NVIDIA Container Toolkit configured.
+    # gpus: all

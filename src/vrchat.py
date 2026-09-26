@@ -6,7 +6,6 @@ import threading
 import time
 from collections import deque
 
-from pynput.keyboard import Controller as KeyboardController
 from pythonosc import udp_client
 from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import ThreadingOSCUDPServer
@@ -23,8 +22,13 @@ CHATBOX_BUCKET_SAFETY_MARGIN_SECONDS = 0.1
 AVATAR_EYE_HEIGHT_MIN_M = 0.1
 AVATAR_EYE_HEIGHT_MAX_M = 100.0
 
-# Keyboard controller for VRChat actions
-_keyboard = KeyboardController()
+try:
+    from pynput.keyboard import Controller as KeyboardController
+
+    _keyboard = KeyboardController()
+except Exception as exc:
+    _keyboard = None
+    logger.warning("Keyboard control unavailable; crouch and crawl require a desktop keyboard backend: %s", exc)
 
 
 class VRChatOSC:
@@ -362,6 +366,8 @@ class VRChatOSC:
 
     def toggle_crouch(self):
         """Toggle crouch in VRChat by pressing C key."""
+        if _keyboard is None:
+            return
         _keyboard.press('c')
         time.sleep(0.05)
         _keyboard.release('c')
@@ -369,6 +375,8 @@ class VRChatOSC:
 
     def toggle_crawl(self):
         """Toggle crawl/prone in VRChat by pressing Z key."""
+        if _keyboard is None:
+            return
         _keyboard.press('z')
         time.sleep(0.05)
         _keyboard.release('z')

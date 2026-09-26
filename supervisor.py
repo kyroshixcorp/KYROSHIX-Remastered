@@ -15,13 +15,7 @@ from pathlib import Path
 
 # Get the project root directory
 PROJECT_ROOT = Path(__file__).parent.absolute()
-VENV_PYTHON = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
-
-# Check if venv exists
-if not VENV_PYTHON.exists():
-    print(f"ERROR: Virtual environment not found at {VENV_PYTHON}")
-    print("Please create one with: uv venv")
-    sys.exit(1)
+VENV_PYTHON = Path(sys.executable)
 
 # ANSI codes
 _RST = "\033[0m"

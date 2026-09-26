@@ -1,0 +1,17 @@
+.git
+.venv
+.venv-*
+**/.venv
+**/.venv-*
+**/__pycache__
+**/*.py[cod]
+.env
+.env.*
+config.yml
+**/config.yml
+config/prompts/*.yml
+discord_bot/prompts/*.yml
+data/**
+models/**
+sfx/**
+plugins/**
