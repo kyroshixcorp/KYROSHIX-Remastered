@@ -114,7 +114,7 @@ class ProcessSupervisor:
         _enable_ansi()
 
         import yaml
-        app_name = "Gabriel"
+        app_name = "KYROSHIX-Remastered"
         try:
             with open("config.yml", "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)

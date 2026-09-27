@@ -162,7 +162,7 @@ export default function Dashboard({ state, logs, clearLogs, addLog, onToast }: P
         {/* Console / Chat area */}
         <div className="flex-1 min-h-0 overflow-hidden">
           <div className="h-full max-w-4xl mx-auto px-4 py-3">
-            <Console logs={logs} appName={state?.app_name || 'Gabriel'} personality={state?.current_personality} />
+            <Console logs={logs} appName={state?.app_name || 'KYROSHIX-Remastered'} personality={state?.current_personality} />
           </div>
         </div>
 

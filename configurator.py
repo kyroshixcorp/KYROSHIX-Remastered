@@ -518,7 +518,7 @@ def main():
 
     print()
     print("  ====================================================")
-    print("       Project Gabriel - Configuration Wizard")
+    print("       KYROSHIX-Remastered - Configuration Wizard")
     print("  ====================================================")
     print()
     print(f"  Opening configurator at {url}")

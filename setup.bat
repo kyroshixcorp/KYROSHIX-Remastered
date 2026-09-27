@@ -8,7 +8,7 @@ cls
 
 echo.
 echo   ====================================================
-echo        Project Gabriel - Setup
+echo        KYROSHIX-Remastered - Setup
 echo   ====================================================
 echo.
 

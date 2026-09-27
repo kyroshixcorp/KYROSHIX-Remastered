@@ -280,7 +280,7 @@ class Config:
 
     @property
     def app_name(self):
-        return self.get("app_name", default="Gabriel")
+        return self.get("app_name", default="KYROSHIX-Remastered")
 
     @property
     def backend(self):

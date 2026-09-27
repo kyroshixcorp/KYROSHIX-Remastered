@@ -4,7 +4,7 @@
 # Copy this file to config.yml and fill in your values.
 
 # Display name used in the WebUI, console logs, OBS overlays, and chatbox.
-app_name: "Gabriel"
+app_name: "KYROSHIX-Remastered"
 
 # Which brain to run. Two options:
 #   gemini_live - cloud Gemini Live websocket (the original setup, native voice)

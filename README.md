@@ -1,17 +1,11 @@
 <p align="center">
-  <picture>
-    <img alt="Project Gabriel" src="https://hoppou.ai/images/projects/ProjectCardHoppouAI-GabrielRemaster.webp" width="600">
-  </picture>
-</p>
-
-<p align="center">
-  <a href="https://github.com/HoppouAI/ProjectGabriel-Remastered/releases"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/HoppouAI/ProjectGabriel-Remastered?style=flat-square&color=6366f1"></a>
-  <a href="https://github.com/HoppouAI/ProjectGabriel-Remastered/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-6366f1?style=flat-square"></a>
+  <a href="https://github.com/kyroshixcorp-sudo/KYROSHIX-Remastered/releases"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/kyroshixcorp-sudo/KYROSHIX-Remastered?style=flat-square&color=6366f1"></a>
+  <a href="https://github.com/kyroshixcorp-sudo/KYROSHIX-Remastered/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-6366f1?style=flat-square"></a>
   <a href="https://www.python.org/downloads/"><img alt="Python" src="https://img.shields.io/badge/python-3.11_|_3.12-6366f1?style=flat-square&logo=python&logoColor=white"></a>
   <a href="https://discord.gg/ZNWTYTk4Vq"><img alt="Discord" src="https://img.shields.io/badge/discord-join-6366f1?style=flat-square&logo=discord&logoColor=white"></a>
 </p>
 
-# Project Gabriel
+# KYROSHIX-Remastered
 
 A real-time AI companion built for VRChat. Gabriel walks around, talks to people, remembers who they are, and has his own personality. He listens through Gemini Live's native audio streaming, sees through computer vision, and controls his avatar through OSC. Built by [Hoppou AI](https://hoppou.ai).
 
@@ -80,7 +74,7 @@ https://github.com/user-attachments/assets/ea35eeeb-7c44-4c7f-af70-9b1d3386fbef
 
 ## Quick Start
 
-1. Download the **latest release** from the [Releases page](https://github.com/HoppouAI/ProjectGabriel-Remastered/releases) and extract it.
+1. Download the **latest release** from the [Releases page](https://github.com/kyroshixcorp-sudo/KYROSHIX-Remastered/releases) and extract it.
 2. Open the folder and run `setup.bat`. It downloads Python 3.12, installs everything, and asks about GPU support.
 3. When setup finishes, run `run.bat` to start Gabriel.
 

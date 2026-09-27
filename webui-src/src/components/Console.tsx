@@ -268,7 +268,7 @@ interface ConsoleProps {
   personality?: string | null
 }
 
-export default function Console({ logs, appName = 'Gabriel', personality }: ConsoleProps) {
+export default function Console({ logs, appName = 'KYROSHIX-Remastered', personality }: ConsoleProps) {
   const endRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const autoScrollRef = useRef(true)
