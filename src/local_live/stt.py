@@ -616,3 +616,68 @@ class ParakeetSTT(BaseSTTProvider):
             )
         except Exception as e:
             logger.debug(f"push transcript: {e}")
+
+
+class FasterWhisperSTT(ParakeetSTT):
+    """Silero VAD + faster-whisper transcription for Linux local mode."""
+
+    def __init__(self, config):
+        super().__init__(config)
+        self._model = config.get("local", "stt", "whisper_model", default="small")
+
+    def _load(self):
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError as e:
+            self._load_error = "faster-whisper is missing; install the local extra with 'uv sync --extra local'"
+            raise RuntimeError(self._load_error) from e
+
+        device = self.config.get("local", "stt", "device", default="cpu")
+        compute_type = self.config.get("local", "stt", "compute_type", default="int8")
+        try:
+            self._whisper = WhisperModel(
+                self._model,
+                device=device,
+                compute_type=compute_type,
+            )
+        except Exception as e:
+            self._load_error = f"faster-whisper model load failed ({self._model}): {e}"
+            logger.error(self._load_error)
+            raise
+
+        try:
+            import torch
+            torch.set_num_threads(1)
+            model, _ = torch.hub.load(
+                repo_or_dir="snakers4/silero-vad",
+                model="silero_vad",
+                trust_repo=True,
+            )
+            model.eval()
+            self._silero = model
+            self._torch = torch
+        except Exception as e:
+            self._load_error = f"silero vad load failed: {e}"
+            logger.error(self._load_error)
+            raise
+
+        self._streaming = False
+        logger.info("local stt ready (faster-whisper %s, device=%s)", self._model, device)
+
+    def _transcribe_worker(self, audio: np.ndarray):
+        with self._transcribe_lock:
+            try:
+                language = None if self._language.lower() == "auto" else self._language
+                segments, _ = self._whisper.transcribe(
+                    audio,
+                    language=language,
+                    beam_size=1,
+                    vad_filter=False,
+                )
+                text = _clean_transcript(" ".join(segment.text for segment in segments))
+                if text:
+                    self._push_transcript(text)
+                else:
+                    logger.debug("faster-whisper returned empty transcript")
+            except Exception as e:
+                logger.warning("faster-whisper transcribe failed: %s", e)

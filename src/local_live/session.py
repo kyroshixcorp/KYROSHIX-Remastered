@@ -40,7 +40,7 @@ from src.gemini_live.chatbox import ChatboxFormattersMixin
 from src.tools import ToolHandler
 
 from .llm import LMStudioClient
-from .stt import ParakeetSTT
+from .stt import FasterWhisperSTT, ParakeetSTT
 from .tools_adapter import collect_openai_tools
 
 logger = logging.getLogger(__name__)
@@ -200,29 +200,31 @@ class LocalLiveSession:
         is called as factory(config) and must return something matching the
         BaseSTTProvider surface in stt.py."""
         ext_name = config.local_stt_external_provider
-        if not ext_name:
-            return ParakeetSTT(config)
-        try:
-            from src.plugins import get_stt_factory
-        except Exception:
-            get_stt_factory = None
-        factory = get_stt_factory(ext_name) if get_stt_factory else None
-        if factory is None:
-            logger.warning(
-                f"local.stt.external_provider '{ext_name}' is not registered by "
-                f"any plugin, falling back to parakeet"
-            )
-            return ParakeetSTT(config)
-        try:
-            provider = factory(config)
-            logger.info(f"local STT: using plugin provider '{ext_name}'")
-            return provider
-        except Exception as e:
-            logger.error(
-                f"plugin STT '{ext_name}' failed to construct: {e}, "
-                f"falling back to parakeet"
-            )
-            return ParakeetSTT(config)
+        if ext_name:
+            try:
+                from src.plugins import get_stt_factory
+            except Exception:
+                get_stt_factory = None
+            factory = get_stt_factory(ext_name) if get_stt_factory else None
+            if factory is not None:
+                try:
+                    provider = factory(config)
+                    logger.info(f"local STT: using plugin provider '{ext_name}'")
+                    return provider
+                except Exception as e:
+                    logger.error("plugin STT '%s' failed to construct: %s", ext_name, e)
+            else:
+                logger.warning(
+                    "local.stt.external_provider '%s' is not registered by any plugin",
+                    ext_name,
+                )
+
+        engine = str(config.get("local", "stt", "engine", default="parakeet")).lower()
+        if engine == "faster_whisper":
+            return FasterWhisperSTT(config)
+        if engine != "parakeet":
+            logger.warning("unknown local STT engine '%s', falling back to parakeet", engine)
+        return ParakeetSTT(config)
 
     # ── chatbox builtins (parity with gemini session) ────────────────────
 

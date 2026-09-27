@@ -65,13 +65,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# local LLM backend (LM Studio + parakeet.cpp STT). historically this pulled
-# an extra STT wheel, but parakeet ships as a prebuilt native library that we
-# load with ctypes and fetch at runtime, so there's nothing left to install.
-# torch/torchaudio (yolo + face tracking) and requests are already core deps,
-# and silero VAD is grabbed via torch.hub, so the local extra is now empty.
-# kept around so `pip install .[local]` still works in existing setups.
-local = []
+# Optional runtime dependencies for local Whisper STT and Pocket TTS.
+local = [
+    "faster-whisper>=1.1.0",
+    "pocket-tts>=2.1.0",
+]
 
 [dependency-groups]
 dev = [

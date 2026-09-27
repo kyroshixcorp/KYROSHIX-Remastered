@@ -8,7 +8,10 @@ services:
     environment:
       PULSE_SERVER: unix:/run/pulse/native
       SDL_AUDIODRIVER: pulse
+      HOME: /app/data/home
       HF_HOME: /app/data/huggingface
+      NLTK_DATA: /app/data/nltk_data
+      TORCH_HOME: /app/data/torch
     volumes:
       - ./config.yml:/app/config.yml:ro
       - ./config:/app/config

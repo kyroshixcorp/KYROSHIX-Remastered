@@ -285,9 +285,7 @@ class Config:
     @property
     def backend(self):
         # which brain runs the show. gemini_live = cloud websocket (default,
-        # the og setup). local = LM Studio + parakeet.cpp STT + external TTS,
-        # offline aside from the small flash-lite sub-agents we keep around for
-        # summaries.
+        # the og setup). local = LM Studio + local STT + a configured TTS provider.
         val = (self.get("backend", default="gemini_live") or "gemini_live").lower()
         if val not in ("gemini_live", "local"):
             logger.warning(f"unknown backend '{val}', defaulting to gemini_live")

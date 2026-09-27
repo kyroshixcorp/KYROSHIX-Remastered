@@ -122,14 +122,43 @@ cp config.yml.example config.yml
 cp config/prompts/prompts.yml.example config/prompts/prompts.yml
 cp config/prompts/appends.yml.example config/prompts/appends.yml
 cp config/prompts/personalities.yml.example config/prompts/personalities.yml
+git clone --depth 1 https://github.com/HoppouAI/ProjectGabriel-Plugins.git /tmp/ProjectGabriel-Plugins
+cp -r /tmp/ProjectGabriel-Plugins/pocket_tts plugins/
 docker compose up -d --build
 docker compose logs -f
 ```
 
-Set `gemini.api_key` in `config.yml`. Disable `yolo.enabled` and leave
-`face_tracker.enabled` false: a headless container cannot capture the desktop.
-OSC uses the host network, so the default `127.0.0.1` destination reaches
-VRChat on this Arch machine. The WebUI is available at
+In `config.yml`, select the local backend and configure LM Studio, local speech,
+and Pocket TTS:
+
+```yaml
+backend: local
+local:
+  llm:
+    base_url: "http://127.0.0.1:1234/v1"
+    model: "local-model"
+  stt:
+    engine: faster_whisper
+    whisper_model: small
+    language: pt
+tts:
+  provider: pocket_tts
+plugins:
+  enabled: true
+  pocket_tts:
+    language: portuguese_24l
+    voice: rafael
+memory:
+  rag_provider: local
+```
+
+Start the LM Studio server on port 1234 with a chat model loaded. The Docker
+container uses host networking, so `127.0.0.1` reaches LM Studio. No Gemini key
+is used. Faster-Whisper and Pocket TTS download their models on first start;
+after those downloads, inference and speech stay local. Disable `yolo.enabled`
+and leave `face_tracker.enabled` false: a headless container cannot capture
+the desktop. OSC uses the host network, so the default `127.0.0.1` destination
+reaches VRChat on this Arch machine. The WebUI is available at
 **http://localhost:8766**. Docker restarts the app after a crash and keeps
 configuration, memory, models, plugins, and sound files in the mounted folders.
 
@@ -163,8 +192,11 @@ Everything lives in `config.yml`. Key sections:
 
 | Section | What it does |
 |:---|:---|
-| `gemini` &rarr; `api_key` | Your Gemini API key (required) |
-| `gemini` &rarr; `model` | Which Gemini Live model to use |
+| `backend` | `gemini_live` for Gemini Live or `local` for LM Studio and local speech |
+| `gemini` &rarr; `api_key` | Required for `gemini_live` or Gemini-backed RAG |
+| `gemini` &rarr; `model` | Which Gemini Live model to use with `backend: gemini_live` |
+| `local` &rarr; `llm`, `stt` | LM Studio endpoint/model and local speech recognition settings |
+| `tts` &rarr; `provider` | Speech output provider; `pocket_tts` runs locally |
 | `gemini` &rarr; `voice` | Prebuilt voice: Puck, Charon, Kore, Fenrir, Aoede, Leda, Orus, Zephyr |
 | `gemini` &rarr; `vad` &rarr; `mode` | Voice Activity Detection: `auto` (server-side) or `silero` (local) |
 | `gemini` &rarr; `thinking` | How much the model reasons before it answers |

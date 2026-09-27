@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         curl \
         ffmpeg \
+        git \
         libasound2-plugins \
         libgl1 \
         libglib2.0-0 \
@@ -30,7 +31,15 @@ RUN sh /uv-installer.sh && rm /uv-installer.sh
 
 WORKDIR /app
 COPY pyproject.toml ./
-RUN uv sync --no-dev --no-install-project
+RUN uv sync --no-dev --extra local --no-install-project
 
 COPY . .
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
+    && git clone --depth 1 https://github.com/HoppouAI/ProjectGabriel-Plugins.git /tmp/gabriel-plugins \
+    && mkdir -p /opt/gabriel-plugins \
+    && cp -a /tmp/gabriel-plugins/pocket_tts /opt/gabriel-plugins/ \
+    && rm -rf /tmp/gabriel-plugins
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["uv", "run", "--no-sync", "python", "main.py"]

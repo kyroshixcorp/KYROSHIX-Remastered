@@ -8,12 +8,9 @@ app_name: "Gabriel"
 
 # Which brain to run. Two options:
 #   gemini_live - cloud Gemini Live websocket (the original setup, native voice)
-#   local       - LM Studio for the LLM + parakeet.cpp for STT + your chosen
-#                 external TTS provider (hoppou / chirp3hd / tiktok / plugin)
-# Local mode is fully offline aside from a few short flash-lite sub-agents
-# (memory recall, conversation summary). Local mode REQUIRES one of the
-# external TTS providers under tts:* to be enabled, since LM Studio has no
-# native voice.
+#   local       - LM Studio for the LLM + local STT + a configured TTS provider
+# Local mode can run fully offline with local STT and TTS. Set memory.rag_provider
+# to "local" if enabling RAG; Gemini Live requires a Gemini API key.
 backend: "gemini_live"
 
 # Privacy controls. Off by default. See README "Privacy" section.
@@ -198,12 +195,10 @@ gemini:
 # Requirements:
 #   1. LM Studio running with a chat model loaded and server enabled
 #      (Developer tab -> Start Server). default endpoint is the one below.
-#   2. One of the external TTS providers below (tts.hoppou /
-#      chirp3_hd / tiktok or a plugin) enabled. local mode refuses to
-#      start without a TTS provider since the LLM has no voice of its own.
-#   3. Nothing to install for STT. The parakeet.cpp runtime (a tiny CPU build
-#      or a vulkan build that runs on any GPU) and the chosen model are
-#      auto downloaded into data/parakeet/ on first run.
+#   2. A TTS provider enabled. For fully local speech, install the Pocket TTS
+#      plugin and set tts.provider to pocket_tts.
+#   3. Linux uses faster-whisper; its model downloads on first run. Windows
+#      can keep using the bundled parakeet.cpp runtime.
 local:
   llm:
     # OpenAI compatible endpoint. LM Studio defaults to localhost:1234.
@@ -254,6 +249,14 @@ local:
     quality: 70
 
   stt:
+    # Linux-compatible local ASR. Options: faster_whisper or parakeet.
+    engine: "faster_whisper"
+    # Whisper model name or a local model directory. Small is multilingual
+    # and a practical CPU default; larger models need more RAM and run slower.
+    whisper_model: "small"
+    device: "cpu"
+    compute_type: "int8"
+
     # parakeet.cpp model. Downloaded as GGUF from HuggingFace
     # (mudler/parakeet-cpp-gguf) on first use, or point at a local .gguf path.
     # Streaming models (name has streaming/eou/realtime) stream text live and
