@@ -15,6 +15,9 @@ services:
     volumes:
       - ./config.yml:/app/config.yml:ro
       - ./config:/app/config
+      - ./discord_bot/config.yml:/app/discord_bot/config.yml:ro
+      - ./discord_bot/prompts:/app/discord_bot/prompts:ro
+      - ./discord_bot/data:/app/discord_bot/data
       - ./data:/app/data
       - ./models:/app/models
       - ./plugins:/app/plugins

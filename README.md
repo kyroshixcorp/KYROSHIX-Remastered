@@ -122,11 +122,20 @@ cp config.yml.example config.yml
 cp config/prompts/prompts.yml.example config/prompts/prompts.yml
 cp config/prompts/appends.yml.example config/prompts/appends.yml
 cp config/prompts/personalities.yml.example config/prompts/personalities.yml
+cp discord_bot/config.yml.example discord_bot/config.yml
+cp discord_bot/prompts/prompts.yml.example discord_bot/prompts/prompts.yml
+cp discord_bot/prompts/appends.yml.example discord_bot/prompts/appends.yml
+cp discord_bot/prompts/personalities.yml.example discord_bot/prompts/personalities.yml
 git clone --depth 1 https://github.com/HoppouAI/ProjectGabriel-Plugins.git /tmp/ProjectGabriel-Plugins
 cp -r /tmp/ProjectGabriel-Plugins/pocket_tts plugins/
 docker compose up -d --build
 docker compose logs -f
 ```
+
+To run the Discord bot in the same container, set `discord_bot.enabled: true`
+in `config.yml` and fill in `discord_bot/config.yml` with its Discord token and
+Gemini API key. Its prompts and runtime data are mounted from the host and
+persist across container rebuilds.
 
 In `config.yml`, select the local backend and configure LM Studio, local speech,
 and Pocket TTS:
