@@ -52,8 +52,9 @@ echo   [3/4] Hardware selection
 echo.
 echo        1. CPU only
 echo        2. NVIDIA GPU
+echo        3. AMD Radeon RX 7000 GPU (Windows 11, Python 3.12)
 echo.
-choice /C 12 /M "        Choice"
+choice /C 123 /M "        Choice"
 set "GPU=%errorlevel%"
 echo.
 
@@ -70,6 +71,7 @@ if %errorlevel% neq 0 (
 )
 
 if "%GPU%"=="2" goto cuda_torch
+if "%GPU%"=="3" goto rocm_torch
 goto torch_done
 
 :cuda_torch
@@ -103,6 +105,35 @@ echo.
 echo        WARNING: neither CUDA build works on this machine.
 echo        Falling back to CPU torch so everything still runs.
 uv pip install torch torchvision torchaudio --reinstall
+goto torch_done
+
+:rocm_torch
+echo.
+echo        Installing AMD ROCm 7.2.1 PyTorch for Radeon RX 7000...
+echo        Requires AMD Adrenalin 26.2.2 and Python 3.12.
+uv pip install --no-cache-dir ^
+    https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_core-7.2.1-py3-none-win_amd64.whl ^
+    https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl ^
+    https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl ^
+    https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm-7.2.1.tar.gz
+if %errorlevel% neq 0 (
+    echo        ERROR: AMD ROCm runtime installation failed.
+    goto torch_done
+)
+
+uv pip install --no-cache-dir --reinstall ^
+    https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torch-2.9.1%%2Brocm7.2.1-cp312-cp312-win_amd64.whl ^
+    https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torchaudio-2.9.1%%2Brocm7.2.1-cp312-cp312-win_amd64.whl ^
+    https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torchvision-0.24.1%%2Brocm7.2.1-cp312-cp312-win_amd64.whl
+if %errorlevel% neq 0 (
+    echo        ERROR: AMD PyTorch installation failed.
+    goto torch_done
+)
+
+echo        Testing PyTorch access to the AMD GPU...
+.venv\Scripts\python.exe -c "import torch; assert torch.cuda.is_available(), 'no GPU device'; print('        GPU OK:', torch.cuda.get_device_name(0))"
+if %errorlevel% neq 0 echo        WARNING: AMD GPU was not detected; check the driver and ROCm install.
+goto torch_done
 
 :torch_done
 

@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ProjectGabriel plugin manifest",
+  "type": "object",
+  "required": ["name", "version", "api_version"],
+  "properties": {
+    "name": { "type": "string" },
+    "version": { "type": "string" },
+    "api_version": { "type": "integer", "minimum": 1 },
+    "author": { "type": "string" },
+    "description": { "type": "string" },
+    "enabled": { "type": "boolean" },
+    "entry": { "type": "string" },
+    "requirements": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": true
+}

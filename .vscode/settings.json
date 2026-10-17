@@ -1,0 +1,6 @@
+{
+  "yaml.schemas": {
+    "./.vscode/schemas/projectgabriel-plugin.schema.json": "plugins/*/plugin.yml"
+},
+"python.terminal.useEnvFile": true
+}

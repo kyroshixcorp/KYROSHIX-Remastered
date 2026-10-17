@@ -7,11 +7,11 @@
 
 # KYROSHIX-Remastered
 
-A real-time AI companion built for VRChat. Gabriel walks around, talks to people, remembers who they are, and has his own personality. He listens through Gemini Live's native audio streaming, sees through computer vision, and controls his avatar through OSC. Built by [Hoppou AI](https://hoppou.ai).
+A real-time AI companion built for VRChat. KYROSHIX walks around, talks to people, remembers who they are, and has his own personality. He listens through Gemini Live's native audio streaming, sees through computer vision, and controls his avatar through OSC. Built by [Hoppou AI](https://hoppou.ai).
 
-**VRChat is completely optional.** Gabriel runs just fine without it: you can talk to him through Discord, the WebUI, or any other interface. He was designed around VRChat and that's where he shines brightest, but nothing locks you into it. The Discord bot, social server, and local backend all work standalone.
+**VRChat is completely optional.** KYROSHIX runs just fine without it: you can talk to him through Discord, the WebUI, or any other interface. He was designed around VRChat and that's where he shines brightest, but nothing locks you into it. The Discord bot, social server, and local backend all work standalone.
 
-Most of the well known VRChat AI companions out there are either closed source, locked behind a paywall, or both. Gabriel breaks that pattern. He is free, open source, and designed so anyone with a Gemini API key and a Windows machine can have their own AI companion without paying a cent or signing up for someone else's service. That's the whole point.
+Most of the well known VRChat AI companions out there are either closed source, locked behind a paywall, or both. KYROSHIX breaks that pattern. He is free, open source, and designed so anyone with a Gemini API key and a Windows machine can have their own AI companion without paying a cent or signing up for someone else's service. That's the whole point.
 
 ---
 
@@ -120,11 +120,14 @@ cp discord_bot/config.yml.example discord_bot/config.yml
 cp discord_bot/prompts/prompts.yml.example discord_bot/prompts/prompts.yml
 cp discord_bot/prompts/appends.yml.example discord_bot/prompts/appends.yml
 cp discord_bot/prompts/personalities.yml.example discord_bot/prompts/personalities.yml
-git clone --depth 1 https://github.com/HoppouAI/ProjectGabriel-Plugins.git /tmp/ProjectGabriel-Plugins
-cp -r /tmp/ProjectGabriel-Plugins/pocket_tts plugins/
 docker compose up -d --build
 docker compose logs -f
 ```
+
+The image includes the `omnivoice_cpp_tts` plugin and builds its Linux Vulkan
+engine. The first run downloads the quantized voice models. Without a passed
+through Vulkan device, the engine falls back to CPU and may be too slow for a
+live conversation.
 
 To run the Discord bot in the same container, set `discord_bot.enabled: true`
 in `config.yml` and fill in `discord_bot/config.yml` with its Discord token and
@@ -132,7 +135,7 @@ Gemini API key. Its prompts and runtime data are mounted from the host and
 persist across container rebuilds.
 
 In `config.yml`, select the local backend and configure LM Studio, local speech,
-and Pocket TTS:
+and OmniVoice:
 
 ```yaml
 backend: local
@@ -145,20 +148,19 @@ local:
     whisper_model: small
     language: pt
 tts:
-  provider: pocket_tts
+  provider: omnivoice_cpp_tts
 plugins:
   enabled: true
-  pocket_tts:
-    language: portuguese_24l
-    voice: rafael
+  omnivoice_cpp_tts:
+    instruct: "female, young adult, brazilian portuguese"
 memory:
   rag_provider: local
 ```
 
 Start the LM Studio server on port 1234 with a chat model loaded. The Docker
 container uses host networking, so `127.0.0.1` reaches LM Studio. No Gemini key
-is used. Faster-Whisper and Pocket TTS download their models on first start;
-after those downloads, inference and speech stay local. Disable `yolo.enabled`
+is used. Faster-Whisper and OmniVoice download their models on first start.
+Disable `yolo.enabled`
 and leave `face_tracker.enabled` false: a headless container cannot capture
 the desktop. OSC uses the host network, so the default `127.0.0.1` destination
 reaches VRChat on this Arch machine. The WebUI is available at
@@ -166,15 +168,25 @@ reaches VRChat on this Arch machine. The WebUI is available at
 configuration, memory, models, plugins, and sound files in the mounted folders.
 
 Keyboard crouch/crawl and screen capture are unavailable in this headless
-setup. Voice input/output requires the host PipeWire PulseAudio service. For
-NVIDIA inference, install and configure the NVIDIA Container Toolkit, then
-uncomment `gpus: all` in `docker-compose.yml`; CPU operation is the default.
+setup. Voice input/output requires the host PipeWire PulseAudio service and a
+valid `PULSE_SOCKET`. On Ubuntu WSL2 with WSLg, set
+`PULSE_SOCKET=/mnt/wslg/PulseServer` in `.env` and run Compose from Ubuntu WSL.
+For AMD GPU acceleration through WSLg, use the WSL Vulkan override:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.wsl-gpu.yml up -d --build
+```
+
+The override passes `/dev/dxg` and WSL graphics libraries into the container
+and selects the Vulkan D3D12 driver. Docker Desktop must have WSL integration
+enabled for Ubuntu. NVIDIA users need a CUDA build and NVIDIA Container Toolkit
+instead; the WSL Vulkan override targets AMD through WSLg.
 
 ---
 
 ## Audio Routing
 
-After starting Gabriel, set these in the Windows Volume Mixer (right-click the speaker icon):
+After starting KYROSHIX, set these in the Windows Volume Mixer (right-click the speaker icon):
 
 | Application | Output | Input |
 |:---|:---|:---|
@@ -184,7 +196,7 @@ After starting Gabriel, set these in the Windows Volume Mixer (right-click the s
 Then in VRChat Settings &rarr; Audio &rarr; Microphone:
 
 - **Microphone Device:** `CABLE Output` (VB-Audio Virtual Cable)
-- **Noise Suppression:** OFF
+- **Noise Suppression:** false
 - **Activation Threshold:** 0%
 
 ---
@@ -288,9 +300,9 @@ Not at all. Gabriel runs just fine as a standalone voice AI. You can talk to him
 </details>
 
 <details>
-<summary><strong>"Does the AI have to be named Gabriel?"</strong></summary>
+<summary><strong>"Does the AI have to be named KYROSHIX?"</strong></summary>
 
-No. Gabriel is just the project name and the default app name. Change it in `config.yml` under `app_name` and update your prompt files in `config/prompts/`. You can give him any name, personality, or backstory you want. Everything is configurable.
+No. KYROSHIX is just the project name and the default app name. Change it in `config.yml` under `app_name` and update your prompt files in `config/prompts/`. You can give him any name, personality, or backstory you want. Everything is configurable.
 
 </details>
 

@@ -169,6 +169,38 @@ class _ResamplingOutputStream:
         return getattr(self._stream, name)
 
 
+class _SilentInputStream:
+    def __init__(self, chunk_size: int, sample_rate: int = 16000):
+        self.chunk_size = chunk_size
+        self.sample_rate = sample_rate
+
+    def read(self, num_frames, exception_on_overflow=False):
+        return b"\x00" * max(1, num_frames * 2)
+
+    def stop_stream(self):
+        return None
+
+    def close(self):
+        return None
+
+
+class _SilentOutputStream:
+    def __init__(self):
+        self.closed = False
+
+    def write(self, data, *args, **kwargs):
+        if self.closed:
+            return 0
+        return len(data) if data is not None else 0
+
+    def stop_stream(self):
+        return None
+
+    def close(self):
+        self.closed = True
+        return None
+
+
 def _is_invalid_sample_rate_error(exc: BaseException) -> bool:
     if getattr(exc, "errno", None) == -9997:
         return True
@@ -202,16 +234,60 @@ class AudioManager:
         self._external_music_started_at: float | None = None
         self._setup_devices()
 
+    def _find_first_device(self, device_type: str):
+        try:
+            count = self.pya.get_device_count()
+        except Exception:
+            return None
+
+        for index in range(count):
+            try:
+                info = self.pya.get_device_info_by_index(index)
+            except Exception:
+                continue
+
+            channels = info.get("maxInputChannels" if device_type == "input" else "maxOutputChannels", 0)
+            if int(channels) > 0:
+                return index
+
+        return None
+
     def _setup_devices(self):
         if self.config.input_device is not None:
             self.input_device = self.config.input_device
         else:
-            self.input_device = self.pya.get_default_input_device_info()["index"]
+            try:
+                self.input_device = self.pya.get_default_input_device_info()["index"]
+            except Exception:
+                fallback = self._find_first_device("input")
+                if fallback is None:
+                    logger.warning("No input audio device available. Voice input is disabled until a microphone is connected or selected.")
+                    self.input_device = None
+                else:
+                    logger.warning(
+                        "No default input device available. Falling back to '%s' (index %s).",
+                        self.pya.get_device_info_by_index(fallback).get("name", f"#{fallback}"),
+                        fallback,
+                    )
+                    self.input_device = fallback
 
         if self.config.output_device is not None:
             self.output_device = self.config.output_device
         else:
-            self.output_device = self.pya.get_default_output_device_info()["index"]
+            try:
+                self.output_device = self.pya.get_default_output_device_info()["index"]
+            except Exception:
+                fallback = self._find_first_device("output")
+                if fallback is None:
+                    logger.warning("No output audio device available. Audio playback is disabled until a speaker/headset is connected or selected.")
+                    self.output_device = None
+                else:
+                    logger.warning(
+                        "No default output device available. Falling back to '%s' (index %s).",
+                        self.pya.get_device_info_by_index(fallback).get("name", f"#{fallback}"),
+                        fallback,
+                    )
+                    self.output_device = fallback
 
     def _setup_pygame(self):
         if self._pygame_ready:
@@ -220,6 +296,12 @@ class AudioManager:
         self._pygame_ready = True
 
     def open_input_stream(self):
+        if self.input_device is None:
+            logger.warning(
+                "No input audio device available. Running in silent input mode; connect a microphone or set audio.input_device in config.yml."
+            )
+            return _SilentInputStream(self.config.chunk_size, self.config.send_sample_rate)
+
         target_rate = self.config.send_sample_rate
 
         try:
@@ -233,7 +315,9 @@ class AudioManager:
             )
         except OSError as e:
             if not _is_invalid_sample_rate_error(e):
-                raise
+                logger.error("Unable to open microphone device %s: %s. Using silent input.", self.input_device, e)
+                self.input_device = None
+                return _SilentInputStream(self.config.chunk_size, target_rate)
 
             try:
                 info = self.pya.get_device_info_by_index(self.input_device)
@@ -253,17 +337,33 @@ class AudioManager:
                 f"falling back to {native_rate} Hz with software resampling."
             )
 
-            stream = self.pya.open(
-                format=pyaudio.paInt16,
-                channels=1,
-                rate=native_rate,
-                input=True,
-                input_device_index=self.input_device,
-                frames_per_buffer=native_chunk,
-            )
+            try:
+                stream = self.pya.open(
+                    format=pyaudio.paInt16,
+                    channels=1,
+                    rate=native_rate,
+                    input=True,
+                    input_device_index=self.input_device,
+                    frames_per_buffer=native_chunk,
+                )
+            except OSError as fallback_error:
+                logger.error(
+                    "Unable to open microphone device %s at %s Hz: %s. Using silent input.",
+                    self.input_device,
+                    native_rate,
+                    fallback_error,
+                )
+                self.input_device = None
+                return _SilentInputStream(self.config.chunk_size, target_rate)
             return _ResamplingInputStream(stream, native_rate, target_rate)
 
     def open_output_stream(self):
+        if self.output_device is None:
+            logger.warning(
+                "No output audio device available. Running in silent output mode; connect a speaker/headset or set audio.output_device in config.yml."
+            )
+            return _SilentOutputStream()
+
         target_rate = self.config.receive_sample_rate
 
         try:

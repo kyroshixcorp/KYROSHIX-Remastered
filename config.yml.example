@@ -195,8 +195,9 @@ gemini:
 # Requirements:
 #   1. LM Studio running with a chat model loaded and server enabled
 #      (Developer tab -> Start Server). default endpoint is the one below.
-#   2. A TTS provider enabled. For fully local speech, install the Pocket TTS
-#      plugin and set tts.provider to pocket_tts.
+#   2. A TTS provider enabled. For fully local speech, install a local TTS
+#      plugin and set tts.provider to its registered name, such as
+#      omnivoice_cpp_tts or omnivoice_tts.
 #   3. Linux uses faster-whisper; its model downloads on first run. Windows
 #      can keep using the bundled parakeet.cpp runtime.
 local:
@@ -318,9 +319,8 @@ local:
 # "hoppou"    = discard Gemini audio, use Hoppou AI cloud TTS
 # "chirp3_hd" = discard Gemini audio, use Google Cloud Chirp 3: HD streaming TTS
 # "tiktok"    = discard Gemini audio, use TikTok's TTS API (free, no API key needed)
-# Plugins can register their own providers too. Just set provider to the name
-# the plugin registered (eg "pocket_tts" from the omnivoice plugin) and that
-# voice gets used. No extra field needed.
+# Plugins can register their own providers too. Set provider to the name
+# registered by the plugin, such as "omnivoice_cpp_tts" or "omnivoice_tts".
 tts:
   provider: "gemini"
 

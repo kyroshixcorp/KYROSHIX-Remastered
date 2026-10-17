@@ -1,11 +1,13 @@
+# ruff: noqa: E402
 import argparse
 import asyncio
 import logging
 import socket
 import time
+
 _BOOT_T0 = time.perf_counter()
 
-from src.cli import setup_logging, print_startup_info
+from src.cli import print_startup_info, setup_logging
 
 setup_logging()
 logger = logging.getLogger("gabriel")
@@ -29,13 +31,14 @@ try:
 except Exception:
     pass
 
-from src.config import Config
 from src.audio import AudioManager
-from src.vrchat import VRChatOSC
-from src.personalities import PersonalityManager
-from src.gemini_live import GeminiLiveSession
+from src.config import Config
 from src.emotions import get_emotion_system
+from src.gemini_live import GeminiLiveSession
 from src.memory import memory_system
+from src.personalities import PersonalityManager
+from src.vrchat import VRChatOSC
+
 _BOOT_IMPORT_S = time.perf_counter() - _t
 
 # Suppress the known CPython 3.12 Windows ProactorEventLoop assertion error
@@ -50,9 +53,10 @@ logging.getLogger("asyncio").addFilter(_ProactorAssertFilter())
 def setup_control_server(session, audio, personality, memory, get_emotion_fn, config):
     """Setup the control panel shared state and return a uvicorn Server."""
     try:
-        from control_server import app, shared_state
         import uvicorn
-        
+
+        from control_server import app, shared_state
+
         shared_state["session"] = session
         shared_state["audio_mgr"] = audio
         shared_state["personality_mgr"] = personality
@@ -359,7 +363,7 @@ async def main(save_audio=False):
             logger.info("Restarting session in 3 seconds...")
             await asyncio.sleep(3)
             continue
-    
+
     # Cleanup
     plugin_manager.emit("shutdown")
     await plugin_manager.teardown_all()

@@ -1,8 +1,26 @@
 services:
+  social-server:
+    build: ./social_server
+    init: true
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./social_server/config.yml:/app/config.yml:ro
+      - ./social_server/data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health',{headers:{'User-Agent':'ProjectGabrielSocial/healthcheck/1.0'}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
   gabriel:
     build: .
     init: true
     restart: unless-stopped
+    depends_on:
+      social-server:
+        condition: service_healthy
     network_mode: host
     user: "${GABRIEL_UID:-1000}:${GABRIEL_GID:-1000}"
     environment:
@@ -23,5 +41,3 @@ services:
       - ./plugins:/app/plugins
       - ./sfx:/app/sfx
       - ${PULSE_SOCKET:-/run/user/1000/pulse/native}:/run/pulse/native:ro
-    # Uncomment when Docker has the NVIDIA Container Toolkit configured.
-    # gpus: all

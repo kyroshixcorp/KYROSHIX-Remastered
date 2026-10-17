@@ -4,13 +4,13 @@ Runs main.py with auto-restart on crash.
 Control panel (with music management) is started by main.py.
 Uses the .venv virtual environment.
 """
+import ctypes
+import os
+import signal
 import subprocess
 import sys
-import os
-import time
-import signal
 import threading
-import ctypes
+import time
 from pathlib import Path
 
 # Get the project root directory
@@ -49,14 +49,17 @@ class ProcessSupervisor:
     def __init__(self):
         self.processes = {}
         self.running = True
-        self.restart_delays = {}  # Track restart delays per process
-        
+        self._stop_event = threading.Event()
+
     def start_process(self, name: str, script: str, restart_on_exit: bool = True):
         """Start a process and optionally auto-restart it."""
         def run():
-            while self.running:
+            restart_delay = 1
+            while self.running and not self._stop_event.is_set():
                 _sup(f"Starting {name}...")
-                
+                process = None
+                started_at = time.monotonic()
+
                 try:
                     env = os.environ.copy()
                     env["PYTHONIOENCODING"] = "utf-8"
@@ -72,43 +75,58 @@ class ProcessSupervisor:
                         env=env,
                     )
                     self.processes[name] = process
-                    
-                    for line in process.stdout:
-                        sys.stdout.write(line)
-                        sys.stdout.flush()
-                    
+
+                    if process.stdout is not None:
+                        for line in process.stdout:
+                            sys.stdout.write(line)
+                            sys.stdout.flush()
+
                     process.wait()
                     exit_code = process.returncode
-                    
-                except Exception as e:
-                    _sup(f"{name} error: {e}", _RED)
+
+                except Exception as exc:
+                    _sup(f"{name} error: {exc}", _RED)
                     exit_code = -1
-                
-                if not self.running:
+
+                finally:
+                    if process is not None and self.processes.get(name) is process:
+                        self.processes.pop(name, None)
+
+                if not self.running or self._stop_event.is_set():
                     break
-                    
+
                 if restart_on_exit:
-                    _sup(f"{name} exited (code {exit_code}), restarting...", _YELLOW)
+                    if time.monotonic() - started_at >= 60:
+                        restart_delay = 1
+                    _sup(
+                        f"{name} exited (code {exit_code}), restarting in {restart_delay}s...",
+                        _YELLOW,
+                    )
+                    if self._stop_event.wait(restart_delay):
+                        break
+                    restart_delay = min(restart_delay * 2, 60)
                 else:
                     _sup(f"{name} exited (code {exit_code})")
                     break
-                    
+
         thread = threading.Thread(target=run, name=name, daemon=True)
         thread.start()
         return thread
-    
+
     def stop_all(self):
         """Stop all managed processes."""
         self.running = False
-        for name, process in self.processes.items():
+        self._stop_event.set()
+        for name, process in list(self.processes.items()):
             if process and process.poll() is None:
                 _sup(f"Stopping {name}...")
-                process.terminate()
                 try:
+                    process.terminate()
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     process.kill()
-    
+                    process.wait()
+
     def run(self):
         """Main supervisor loop."""
         _enable_ansi()
@@ -116,23 +134,26 @@ class ProcessSupervisor:
         import yaml
         app_name = "KYROSHIX-Remastered"
         try:
-            with open("config.yml", "r", encoding="utf-8") as f:
-                cfg = yaml.safe_load(f)
-            app_name = cfg.get("app_name", app_name)
+            with open(PROJECT_ROOT / "config.yml", encoding="utf-8") as config_file:
+                config = yaml.safe_load(config_file)
+            if isinstance(config, dict):
+                app_name = config.get("app_name", app_name)
         except Exception:
             pass
 
-        W = 49
+        banner_width = 49
         spaced_name = " ".join(app_name.upper())
-        t = f"P R O J E C T   {spaced_name}"
-        s = "Real-time VRChat AI"
+        title = f"P R O J E C T   {spaced_name}"
+        subtitle = "Real-time VRChat AI"
+        top_border = "\u2554" + "\u2550" * banner_width + "\u2557"
+        bottom_border = "\u255a" + "\u2550" * banner_width + "\u255d"
         print()
-        print(f"  {_CYAN}\u2554{'\u2550' * W}\u2557{_RST}")
-        print(f"  {_CYAN}\u2551{_RST}{_WHITE}{_BOLD}{t:^{W}}{_RST}{_CYAN}\u2551{_RST}")
-        print(f"  {_CYAN}\u2551{_RST}{_DIM}{s:^{W}}{_RST}{_CYAN}\u2551{_RST}")
-        print(f"  {_CYAN}\u255a{'\u2550' * W}\u255d{_RST}")
+        print(f"  {_CYAN}{top_border}{_RST}")
+        print(f"  {_CYAN}\u2551{_RST}{_WHITE}{_BOLD}{title:^{banner_width}}{_RST}{_CYAN}\u2551{_RST}")
+        print(f"  {_CYAN}\u2551{_RST}{_DIM}{subtitle:^{banner_width}}{_RST}{_CYAN}\u2551{_RST}")
+        print(f"  {_CYAN}{bottom_border}{_RST}")
         print()
-        
+
         # KYROSHIX BOT: request the configured VRChat world/instance before
         # starting the AI. This launcher stores no VRChat credentials.
         try:
@@ -144,12 +165,12 @@ class ProcessSupervisor:
             )
             if autojoin.returncode != 0:
                 _sup("VRChat autojoin returned an error; starting AI anyway.", _YELLOW)
-        except Exception as e:
-            _sup(f"VRChat autojoin error: {e}; starting AI anyway.", _YELLOW)
+        except Exception as exc:
+            _sup(f"VRChat autojoin error: {exc}; starting AI anyway.", _YELLOW)
 
         # Start main application (control panel is started within main.py)
-        main_thread = self.start_process("main", "main.py", restart_on_exit=True)
-        
+        self.start_process("main", "main.py", restart_on_exit=True)
+
         # Wait for Ctrl+C
         try:
             while True:
@@ -158,21 +179,21 @@ class ProcessSupervisor:
             print()
             _sup("Shutting down...")
             self.stop_all()
-            
+
 
 def main():
     supervisor = ProcessSupervisor()
-    
+
     # Handle termination signals
-    def signal_handler(sig, frame):
+    def signal_handler(signal_number, current_frame):
         print()
         _sup("Received termination signal")
         supervisor.stop_all()
         sys.exit(0)
-    
+
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-    
+
     supervisor.run()
 
 

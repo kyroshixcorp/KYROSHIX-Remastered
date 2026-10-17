@@ -1,0 +1,10 @@
+services:
+  gabriel:
+    devices:
+      - /dev/dxg:/dev/dxg
+    volumes:
+      - /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro
+    environment:
+      GGML_BACKEND: Vulkan0
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/dzn_icd.x86_64.json
+      LD_LIBRARY_PATH: /opt/omnivoice_cpp_tts/native:/usr/lib/wsl/lib

@@ -65,10 +65,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Optional runtime dependencies for local Whisper STT and Pocket TTS.
+# Optional runtime dependencies for local Whisper STT.
 local = [
     "faster-whisper>=1.1.0",
-    "pocket-tts>=2.1.0",
 ]
 
 [dependency-groups]

@@ -6,7 +6,6 @@ Run after setup.bat installs dependencies.
 
 import http.server
 import json
-import os
 import sys
 import threading
 import urllib.request
@@ -54,8 +53,8 @@ def discover_tool_registry() -> dict:
     import importlib
 
     importlib.import_module("src.tools")
-    from src.tools._base import get_registered_tools
     from src.emotions import generate_emotion_function_declarations
+    from src.tools._base import get_registered_tools
     # Pull in modules that aren't auto-imported by src/tools/__init__.py
     for extra in ("src.tools.time",):
         try:
@@ -124,7 +123,7 @@ def discover_tool_registry() -> dict:
             if not (entry / "plugin.yml").exists():
                 continue
             try:
-                with open(entry / "plugin.yml", "r", encoding="utf-8") as f:
+                with open(entry / "plugin.yml", encoding="utf-8") as f:
                     manifest = yaml.safe_load(f) or {}
                 plugins_out.append(manifest.get("name") or entry.name)
             except Exception:
@@ -140,7 +139,7 @@ def discover_tool_registry() -> dict:
 def load_tools_existing() -> dict:
     """Load the user's tools.yml, returning an empty layout if missing."""
     if TOOLS_OUTPUT.exists():
-        with open(TOOLS_OUTPUT, "r", encoding="utf-8") as f:
+        with open(TOOLS_OUTPUT, encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     return {}
 
@@ -157,10 +156,10 @@ def save_tools(tools_payload: dict):
     yaml_rt.preserve_quotes = True
 
     if TOOLS_OUTPUT.exists():
-        with open(TOOLS_OUTPUT, "r", encoding="utf-8") as f:
+        with open(TOOLS_OUTPUT, encoding="utf-8") as f:
             data = yaml_rt.load(f) or {}
     elif TOOLS_EXAMPLE.exists():
-        with open(TOOLS_EXAMPLE, "r", encoding="utf-8") as f:
+        with open(TOOLS_EXAMPLE, encoding="utf-8") as f:
             data = yaml_rt.load(f) or {}
     else:
         data = {}
@@ -213,7 +212,7 @@ def get_audio_devices():
 def load_defaults():
     """Load config.yml.example as the default config."""
     if CONFIG_EXAMPLE.exists():
-        with open(CONFIG_EXAMPLE, "r", encoding="utf-8") as f:
+        with open(CONFIG_EXAMPLE, encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     return {}
 
@@ -221,7 +220,7 @@ def load_defaults():
 def load_existing_config():
     """Load existing config.yml values (plain dict, no comments)."""
     if CONFIG_OUTPUT.exists():
-        with open(CONFIG_OUTPUT, "r", encoding="utf-8") as f:
+        with open(CONFIG_OUTPUT, encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     return {}
 
@@ -241,7 +240,7 @@ def save_config(user_values):
     yaml_rt.preserve_quotes = True
 
     # Always start from the example template (has all comments)
-    with open(CONFIG_EXAMPLE, "r", encoding="utf-8") as f:
+    with open(CONFIG_EXAMPLE, encoding="utf-8") as f:
         data = yaml_rt.load(f)
 
     # If existing config.yml has values, merge them first (preserves settings the UI doesn't show)
@@ -274,7 +273,7 @@ def save_prompts(prompt_data):
     }
 
     if PROMPTS_OUTPUT.exists():
-        with open(PROMPTS_OUTPUT, "r", encoding="utf-8") as f:
+        with open(PROMPTS_OUTPUT, encoding="utf-8") as f:
             data = yaml_rt.load(f)
         if data is None:
             data = {}
@@ -291,7 +290,7 @@ def save_prompts(prompt_data):
             data[prompt_name] = entry
     elif Path("config/prompts/prompts.yml.example").exists():
         # Start from the example template for comments
-        with open("config/prompts/prompts.yml.example", "r", encoding="utf-8") as f:
+        with open("config/prompts/prompts.yml.example", encoding="utf-8") as f:
             data = yaml_rt.load(f)
         if data is None:
             data = {}
