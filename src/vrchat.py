@@ -11,6 +11,7 @@ from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import ThreadingOSCUDPServer
 
 from src.raycast import RaycastState
+from src.security import security
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,8 @@ class VRChatOSC:
     def __init__(self, config):
         self.config = config
         self.client = udp_client.SimpleUDPClient(config.osc_ip, config.osc_port)
+        self._osc_failures = 0
+        self.last_osc_error = None
         self._typing = False
         self._load_chatbox_rate_limit_config()
         self._last_chatbox_time = 0.0
@@ -133,6 +136,27 @@ class VRChatOSC:
             parsed = max(minimum, parsed)
         return parsed
 
+    def _safe_send(self, address: str, *args) -> bool:
+        """Envia uma mensagem OSC de forma segura: nunca levanta exceção para
+        cima, então o bot continua rodando mesmo sem o VRChat aberto (UDP é
+        fire-and-forget; falhas são apenas registradas e contabilizadas)."""
+        try:
+            self._safe_send(address, *args)
+            self._osc_failures = 0
+            self.last_osc_error = None
+            return True
+        except Exception as exc:  # noqa: BLE001
+            self._osc_failures += 1
+            self.last_osc_error = exc
+            if self._osc_failures <= 3 or self._osc_failures % 50 == 0:
+                logger.debug("OSC send failed (%s): %s", address, exc)
+            return False
+
+    @property
+    def vrchat_available(self) -> bool:
+        """Indica se o último envio OSC teve sucesso (heurística para UI/logs)."""
+        return self._osc_failures == 0 or self.last_osc_error is None
+
     def _start_osc_listener(self, config):
         """Start background OSC server to receive avatar parameters from VRChat."""
         receive_port = getattr(config, "osc_receive_port", 9001)
@@ -191,7 +215,18 @@ class VRChatOSC:
         """Catch-all for OSC addresses without an explicit handler. Forwards
         avatar params to the raycast state so VRCRaycast outputs are picked
         up automatically (the prefix scrubber inside RaycastState handles
-        VRCFury's VF<id>_ namespacing)."""
+        VRCFury's VF<id>_ namespacing).
+
+        Includes OSC flood guard: rejects messages if the source IP exceeds
+        the configured OSC messages-per-second limit.
+        """
+        # OSC flood guard (messages come from 127.0.0.1 in local mode)
+        osc_ip = "127.0.0.1"
+        allowed, reason = security.check_osc(osc_ip, address)
+        if not allowed:
+            logger.debug("OSC flood guard blocked %s from %s: %s", address, osc_ip, reason)
+            return
+
         if not args or not address.startswith("/avatar/parameters/"):
             return
         param = address[len("/avatar/parameters/"):]
@@ -203,7 +238,7 @@ class VRChatOSC:
             try:
                 text = self._chatbox_queue.get()
                 self._wait_for_chatbox_slot()
-                self.client.send_message("/chatbox/input", [text, True, False])
+                self._safe_send("/chatbox/input", [text, True, False])
                 self._record_chatbox_send()
 
             except Exception as e:
@@ -253,7 +288,7 @@ class VRChatOSC:
     def set_typing(self, typing: bool):
         if self._typing != typing:
             self._typing = typing
-            self.client.send_message("/chatbox/typing", typing)
+            self._safe_send("/chatbox/typing", typing)
 
     def send_chatbox(self, text: str):
         """Queue a chatbox message (non-blocking, sent by background thread)."""
@@ -316,9 +351,9 @@ class VRChatOSC:
             await asyncio.sleep(actual_delay)
 
     def toggle_voice(self):
-        self.client.send_message("/input/Voice", 1)
+        self._safe_send("/input/Voice", 1)
         time.sleep(0.05)
-        self.client.send_message("/input/Voice", 0)
+        self._safe_send("/input/Voice", 0)
 
     @staticmethod
     def clamp_avatar_eye_height(height_meters: float) -> float:
@@ -332,7 +367,7 @@ class VRChatOSC:
         requested = float(height_meters)
         clamped = self.clamp_avatar_eye_height(requested)
         self.last_requested_avatar_eye_height_meters = clamped
-        self.client.send_message("/avatar/eyeheight", clamped)
+        self._safe_send("/avatar/eyeheight", clamped)
         logger.info(f"Set avatar eye height to {clamped:.3f}m")
         return {
             "requested_height_meters": requested,
@@ -355,14 +390,32 @@ class VRChatOSC:
         }
 
     def set_movement(self, forward: float = 0.0, horizontal: float = 0.0):
-        """Set movement axes (float -1 to 1). Reset to 0 when done."""
-        self.client.send_message("/input/Vertical", max(-1.0, min(1.0, forward)))
-        self.client.send_message("/input/LookHorizontal", max(-1.0, min(1.0, horizontal)))
+        """Set movement axes (float -1 to 1).
+
+        forward: /input/Vertical  (-1 back, 1 forward)
+        horizontal: /input/Horizontal (-1 strafe left, 1 strafe right)
+
+        Reset to 0 when done. Use set_look() for camera/head rotation.
+        """
+        self._safe_send("/input/Vertical", max(-1.0, min(1.0, forward)))
+        self._safe_send("/input/Horizontal", max(-1.0, min(1.0, horizontal)))
+
+    def set_look(self, look_h: float = 0.0, look_v: float = 0.0):
+        """Set camera/head rotation axes (float -1 to 1).
+
+        look_h: /input/LookHorizontal (-1 left, 1 right) -- rotates the view
+        look_v: /input/LookVertical (-1 down, 1 up)
+
+        Reset to 0 when done. Use set_movement() for walking/strafing.
+        """
+        self._safe_send("/input/LookHorizontal", max(-1.0, min(1.0, look_h)))
+        self._safe_send("/input/LookVertical", max(-1.0, min(1.0, look_v)))
 
     def stop_movement(self):
-        self.client.send_message("/input/Vertical", 0.0)
-        self.client.send_message("/input/LookHorizontal", 0.0)
-        self.client.send_message("/input/Horizontal", 0.0)
+        self._safe_send("/input/Vertical", 0.0)
+        self._safe_send("/input/Horizontal", 0.0)
+        self._safe_send("/input/LookHorizontal", 0.0)
+        self._safe_send("/input/LookVertical", 0.0)
 
     def toggle_crouch(self):
         """Toggle crouch in VRChat by pressing C key."""
@@ -394,30 +447,30 @@ class VRChatOSC:
         sprinting = speed == "sprint"
 
         if direction == "forward":
-            self.client.send_message("/input/Vertical", axis_val)
+            self._safe_send("/input/Vertical", axis_val)
         elif direction == "backward":
-            self.client.send_message("/input/Vertical", -axis_val)
+            self._safe_send("/input/Vertical", -axis_val)
         elif direction == "left":
-            self.client.send_message("/input/Horizontal", -axis_val)
+            self._safe_send("/input/Horizontal", -axis_val)
         elif direction == "right":
-            self.client.send_message("/input/Horizontal", axis_val)
+            self._safe_send("/input/Horizontal", axis_val)
 
-        self.client.send_message("/input/Run", 1 if sprinting else 0)
+        self._safe_send("/input/Run", 1 if sprinting else 0)
         logger.info(f"Started moving {direction} (speed={speed}, axis={axis_val}, sprint={sprinting})")
 
     def stop_all_movement(self):
         """Reset all movement axes and sprint to zero."""
-        self.client.send_message("/input/Vertical", 0.0)
-        self.client.send_message("/input/Horizontal", 0.0)
-        self.client.send_message("/input/LookHorizontal", 0.0)
-        self.client.send_message("/input/Run", 0)
+        self._safe_send("/input/Vertical", 0.0)
+        self._safe_send("/input/Horizontal", 0.0)
+        self._safe_send("/input/LookHorizontal", 0.0)
+        self._safe_send("/input/Run", 0)
         logger.info("Stopped all movement")
 
     def jump(self):
         """Make the avatar jump."""
-        self.client.send_message("/input/Jump", 1)
+        self._safe_send("/input/Jump", 1)
         time.sleep(0.05)
-        self.client.send_message("/input/Jump", 0)
+        self._safe_send("/input/Jump", 0)
         logger.info("Jumped")
 
     def look(self, direction: str, duration: float, speed: str = "normal"):
@@ -443,7 +496,7 @@ class VRChatOSC:
             if abs(delta) > max_rate:
                 new_val = current + max_rate * (1 if delta > 0 else -1)
             current = max(-1.0, min(1.0, new_val))
-            self.client.send_message("/input/LookHorizontal", float(current))
+            self._safe_send("/input/LookHorizontal", float(current))
             time.sleep(step_interval)
             elapsed += step_interval
 
@@ -454,10 +507,10 @@ class VRChatOSC:
             if abs(delta) > max_rate:
                 new_val = current + max_rate * (1 if delta > 0 else -1)
             current = max(-1.0, min(1.0, new_val))
-            self.client.send_message("/input/LookHorizontal", float(current))
+            self._safe_send("/input/LookHorizontal", float(current))
             time.sleep(step_interval)
 
-        self.client.send_message("/input/LookHorizontal", 0.0)
+        self._safe_send("/input/LookHorizontal", 0.0)
         logger.info(f"Looked {direction} for {duration}s (speed={speed})")
 
     def look_vertical(self, direction: str, duration: float, speed: str = "normal"):
@@ -479,7 +532,7 @@ class VRChatOSC:
             if abs(delta) > max_rate:
                 new_val = current + max_rate * (1 if delta > 0 else -1)
             current = max(-1.0, min(1.0, new_val))
-            self.client.send_message("/input/LookVertical", float(current))
+            self._safe_send("/input/LookVertical", float(current))
             time.sleep(step_interval)
             elapsed += step_interval
 
@@ -489,25 +542,25 @@ class VRChatOSC:
             if abs(delta) > max_rate:
                 new_val = current + max_rate * (1 if delta > 0 else -1)
             current = max(-1.0, min(1.0, new_val))
-            self.client.send_message("/input/LookVertical", float(current))
+            self._safe_send("/input/LookVertical", float(current))
             time.sleep(step_interval)
 
-        self.client.send_message("/input/LookVertical", 0.0)
+        self._safe_send("/input/LookVertical", 0.0)
         logger.info(f"Looked {direction} for {duration}s (speed={speed})")
 
     def grab(self):
         """Grab and hold the item highlighted in front of you. Stays held until drop() is called."""
-        self.client.send_message("/input/GrabRight", 1)
+        self._safe_send("/input/GrabRight", 1)
         logger.info("Grabbing item (GrabRight held)")
 
     def drop(self):
         """Release the item currently held in right hand."""
-        self.client.send_message("/input/GrabRight", 0)
+        self._safe_send("/input/GrabRight", 0)
         logger.info("Dropped item (GrabRight released)")
 
     def use(self):
         """Use/interact with the item highlighted in front of you using right hand."""
-        self.client.send_message("/input/UseRight", 1)
+        self._safe_send("/input/UseRight", 1)
         time.sleep(0.15)
-        self.client.send_message("/input/UseRight", 0)
+        self._safe_send("/input/UseRight", 0)
         logger.info("Used item (UseRight)")

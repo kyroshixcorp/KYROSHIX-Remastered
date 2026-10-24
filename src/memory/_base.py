@@ -342,3 +342,22 @@ class MemorySystemBase:
                 self._httpx_client.close()
             except Exception:
                 pass
+
+    # ------------------------------------------------------------------
+    # health & maintenance
+    # ------------------------------------------------------------------
+    def healthy(self) -> bool:
+        """Return True if the memory backend is reachable."""
+        return self.is_available()
+
+    def vacuum_sqlite(self) -> None:
+        """Compact the SQLite database to keep the file small over 24/7 uptime."""
+        if self.backend != "sqlite" or not self.sqlite_conn:
+            return
+        try:
+            with self._sqlite_lock:
+                self.sqlite_conn.execute("VACUUM")
+                self.sqlite_conn.commit()
+            logger.debug("SQLite vacuum completed")
+        except Exception as e:
+            logger.debug(f"SQLite vacuum skipped: {e}")

@@ -1,4 +1,5 @@
 import asyncio
+import gc
 import json
 import logging
 import time
@@ -12,6 +13,7 @@ from src.tools import get_tool_declarations, ToolHandler
 from src.emotions import init_emotion_system, get_emotion_system
 from src.idle_chatbox import IdleChatbox
 from .conversation_logger import ConversationLogger, CONVERSATION_DIR
+from src.web.routes.health import circuit_record_failure, circuit_record_success, circuit_is_open
 from .chatbox import ChatboxFormattersMixin
 from .config_builder import ConfigBuilderMixin
 from .audio import AudioLoopsMixin
@@ -62,6 +64,8 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
         self._last_connect_succeeded = True  # Track if last connect attempt reached onopen
         self._rate_limit_backoff = 0
         self._keys_tried_since_success = 0  # keys burned since the last working connect
+        self._key_last_failure: dict[str, float] = {}  # last failure time per key
+        self._key_cooldown_seconds = 30  # how long to skip a key after a quota error
         self._tool_call_pending = False
         self._audio_stream_active = False  # True when server knows we're streaming audio
         self._audio_gated = False  # True when we should suppress outbound audio (tool calls, model speaking)
@@ -69,7 +73,7 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
         self._manual_vad_silence_start = 0  # When silence started for manual VAD debounce
         self._silero_vad = None  # Lazy-loaded Silero VAD model
         self._out_queue = asyncio.Queue(maxsize=5)
-        self._audio_in_queue = asyncio.Queue()
+        self._audio_in_queue = asyncio.Queue(maxsize=50)
         self._reconnect_requested = False
         self._mic_muted = False
         self._session = None
@@ -98,10 +102,20 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
         self._compression_in_progress = False  # Guard to prevent concurrent compression
         self._compression_summary = None  # Summary from custom compression to seed on reconnect
         self._ready_badge_shown = False  # Big green READY banner only fires on first successful connect
+        self._session_handle_file = SESSION_HANDLE_FILE
         self._load_session_handle()
         self._conv_logger = ConversationLogger(enabled=config.conversation_logging_enabled)
-        
-        # Initialize emotion system (also owns the generated motion
+
+        # 24/7 watchdog: max session age before graceful reconnect (prevents
+        # stale handle / state buildup) and dead-socket detection.
+        self._max_session_seconds = float(getattr(config, "session_max_seconds", 3600))
+        self._health_check_seconds = float(getattr(config, "health_check_seconds", 30))
+        self._dead_socket_seconds = float(getattr(config, "dead_socket_seconds", 120))
+        self._force_reconnect = False
+
+        # Memory caps so long-running sessions do not leak RAM.
+        self._max_audio_recording_bytes = int(getattr(config, "max_audio_recording_bytes", 64 * 1024 * 1024))  # 64 MB
+        self._max_transcript_buffer_chars = int(getattr(config, "max_transcript_buffer_chars", 20000))# Initialize emotion system (also owns the generated motion
         # expression layer, so it runs even with canned emotions off)
         self._emotion_system = None
         if config.emotion_enabled or config.motion_enabled:
@@ -151,6 +165,19 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
         self._replay_context = []  # manual reconnect = fresh start
         self._compression_summary = None
         logger.info("Reconnect requested via control panel")
+
+    def healthy(self) -> bool:
+        """Return True if the Gemini session is currently connected."""
+        return getattr(self, "_session", None) is not None
+
+    def record_key_failure(self, key: str) -> None:
+        """Record that an API key failed, so we can skip it during cooldown."""
+        self._key_last_failure[key] = time.time()
+
+    def is_key_in_cooldown(self, key: str) -> bool:
+        """Return True if the key is still in its cooldown window."""
+        last = self._key_last_failure.get(key, 0)
+        return (time.time() - last) < self._key_cooldown_seconds
 
     async def _summarize_conversation_for_compression(self):
         """Summarize current conversation using a lightweight model for context compression.
@@ -267,6 +294,16 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
         """Stream optional debug audio recording to disk without growing RAM forever."""
         if not audio_data:
             return
+        # Cap the in-memory buffer: drop oldest audio when the cap is hit.
+        if self._audio_recording_writer is None:
+            needed = len(self._audio_recording) + len(audio_data)
+            if needed > self._max_audio_recording_bytes:
+                # Keep only the tail end within the cap.
+                keep = self._max_audio_recording_bytes - len(audio_data)
+                if keep > 0:
+                    del self._audio_recording[:len(self._audio_recording) - keep]
+                else:
+                    self._audio_recording = bytearray()
         if self._audio_recording_writer is None:
             import wave
             data_dir = Path("data")
@@ -548,6 +585,13 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
                 use_alpha = self._needs_alpha_api() and not self._alpha_fallback_failed
                 # Always use v1alpha API version for Live API (required for video, etc.)
                 # The use_alpha flag only controls whether to include alpha-only CONFIG features
+                # Check circuit breaker before attempting connection
+                if circuit_is_open("gemini"):
+                    logger.warning("Gemini circuit breaker is OPEN - skipping connect attempt")
+                    _broadcast_console("warning", "Gemini API circuit breaker open, waiting for recovery...")
+                    await asyncio.sleep(10)
+                    continue
+
                 client = genai.Client(
                     api_key=self.config.api_key,
                     http_options={"api_version": "v1alpha"},
@@ -599,6 +643,8 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
                 try:
                     self._last_connect_succeeded = True
                     self._keys_tried_since_success = 0
+                    self._force_reconnect = False
+                    circuit_record_success("gemini")
                     logger.info("Connected to Gemini Live")
                     _broadcast_console("info", f"Connected to Gemini Live ({self.config.model})")
                     if not self._ready_badge_shown:
@@ -638,7 +684,7 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
                     self.tool_handler.session = session
                     self.tool_handler.live_session = self
                     self._out_queue = asyncio.Queue(maxsize=5)
-                    self._audio_in_queue = asyncio.Queue()
+                    self._audio_in_queue = asyncio.Queue(maxsize=50)
                     self._stream_closing = False
                     self._playback_interrupted = False
                     self._fade_in_next = False
@@ -663,6 +709,7 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
                             ("reconnect-monitor", self._reconnect_monitor_loop()),
                             ("now-playing", self._now_playing_loop()),
                             ("idle-check", self._idle_check_loop()),
+                            ("health-watchdog", self._connection_health_watchdog()),
                         ]
                         # Always start TTS audio loop (supports hot-swap)
                         task_specs.append(("tts-audio", self._tts_audio_loop()))
@@ -779,6 +826,7 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
 
                     old_key = self.config.api_key
                     new_key = self.config.rotate_key()
+                    circuit_record_failure("gemini")
                     if new_key != old_key:
                         logger.warning("Rate limited - switched API key")
                         _broadcast_console("info", "Rate limited - switched API key")
@@ -1013,6 +1061,65 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
         await asyncio.sleep(delay)
         self._reconnect_requested = True
 
+    async def _connection_health_watchdog(self):
+        """Force a graceful reconnect when the session is too old (prevents
+        stale handle/state buildup over 24/7 uptime) or when the socket goes
+        dead (no audio received while we expect it). Periodically triggers
+        garbage collection to keep long-running RAM usage bounded."""
+        _gc_ticks = 0
+        _maint_ticks = 0
+        while True:
+            await asyncio.sleep(self._health_check_seconds)
+            try:
+                # Max session age reached -> graceful reconnect with context replay
+                if self._max_session_seconds > 0 and self._connection_start_time > 0:
+                    age = time.time() - self._connection_start_time
+                    if age >= self._max_session_seconds:
+                        logger.info(
+                            f"Session max age reached ({age:.0f}s), graceful reconnect"
+                        )
+                        self._force_reconnect = True
+                        raise Exception("Session max age reached")
+                # Dead socket: no audio received for a long stretch while a
+                # session is active (and we're not awaiting IDLE / muted).
+                if (
+                    self._session is not None
+                    and self._last_audio_time > 0
+                    and not self._awaiting_idle
+                    and not self._mic_muted
+                    and not self._audio_gated
+                ):
+                    silence = time.time() - self._last_audio_time
+                    if silence >= self._dead_socket_seconds:
+                        logger.warning(
+                            f"No audio received for {silence:.0f}s - dead socket, reconnecting"
+                        )
+                        self._force_reconnect = True
+                        raise Exception("Dead socket")
+                # Periodic GC to keep long-running RAM usage bounded.
+                _gc_ticks += 1
+                if _gc_ticks % 2 == 0:
+                    gc.collect()
+
+                # Periodic memory maintenance every ~5 minutes (600 ticks * 5s = 3000s? no, health_check is 30s default)
+                # health_check_seconds default = 30, so 600 ticks = 5 hours. Let's do every 20 ticks = 10 minutes.
+                _maint_ticks += 1
+                if _maint_ticks >= 20:
+                    _maint_ticks = 0
+                    try:
+                        from src.memory.cognitive import cognitive_system
+                        if cognitive_system.should_run_maintenance():
+                            cognitive_system.run_maintenance()
+                    except Exception as e:
+                        logger.debug(f"Auto-maintenance skipped: {e}")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                if str(e) in ("Session max age reached", "Dead socket"):
+                    # Propagate to tear down the session and reconnect via run()
+                    raise
+                logger.debug(f"Health watchdog check error: {e}")
+
     async def _idle_check_loop(self):
         """Monitor for idle state, stop talking animations, and trigger idle animation."""
         while True:
@@ -1087,6 +1194,13 @@ class GeminiLiveSession(ReceiveLoopMixin, AudioLoopsMixin, VisionLoopMixin, Conf
                     "Try to engage nearby people in conversation. "
                     "Say something interesting, ask a question, or make an observation to get someone to talk to you."
                 )
+            # Tick MagicChatbox OSC to flush any pending text/color/size changes
+            try:
+                mc = getattr(self.tool_handler, "magic_chatbox", None)
+                if mc is not None:
+                    mc.tick()
+            except Exception:
+                pass
 
     async def _now_playing_loop(self):
         """Background task that ticks the chatbox orchestrator. The

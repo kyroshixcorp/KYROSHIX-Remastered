@@ -52,6 +52,14 @@ async def clear_session():
     return {"message": "Session handle cleared"}
 
 
+@router.get("/api/monitor/status")
+async def monitor_status():
+    mon = shared_state.get("monitor")
+    if mon is None:
+        return {"enabled": False}
+    return mon.status()
+
+
 @router.post("/api/toggle-mute")
 async def toggle_mute():
     session = shared_state.get("session")

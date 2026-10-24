@@ -1,0 +1,31 @@
+FROM rocm/pytorch:latest
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PULSE_SERVER=unix:/run/pulse/native \
+    SDL_AUDIODRIVER=pulse \
+    HF_HOME=/app/data/huggingface \
+    HSA_OVERRIDE_GFX_VERSION=11.0.0 \
+    HIP_VISIBLE_DEVICES=0 \
+    CUDA_VISIBLE_DEVICES=0 \
+    ROCM_PATH=/opt/rocm \
+    PATH=/opt/rocm/bin:/usr/local/bin:$PATH
+
+# rocm/pytorch já traz Python 3.12, PyTorch+ROCm, numpy, build-essential,
+# cmake, git, ffmpeg, ninja, vulkan pré-instalados. Sem rede externa.
+
+RUN printf '%s\n' 'pcm.!default { type pulse }' 'ctl.!default { type pulse }' > /etc/asound.conf
+
+WORKDIR /app
+# Instala dependências restantes sem rede; não falha se faltar alguma
+COPY requirements.docker.txt ./
+RUN pip install --no-index --find-links=/wheels -r requirements.docker.txt 2>/dev/null || true
+
+COPY . .
+COPY plugins/omnivoice_cpp_tts /opt/gabriel-plugins/omnivoice_cpp_tts
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN ln -sf /usr/local/bin/python3 /usr/local/bin/python
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["python", "main.py"]

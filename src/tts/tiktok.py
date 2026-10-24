@@ -12,6 +12,7 @@ import soundfile as sf
 from stream2sentence import generate_sentences
 
 from ._helpers import _resample, _strip_audio_tags, _strip_emojis
+from .cache import tts_cache
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +59,9 @@ class TikTokTTSProvider:
         import nltk
         nltk.download('punkt_tab', quiet=True)
         self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
+            timeout=httpx.Timeout(connect=5.0, read=15.0, write=5.0, pool=5.0),
             follow_redirects=True,
+            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
         )
         self._splitter_thread = threading.Thread(target=self._splitter_loop, daemon=True)
         self._splitter_thread.start()
@@ -240,11 +242,21 @@ class TikTokTTSProvider:
             sub_q.put_nowait(None)
             return
 
+        # Check cache first
+        cache_key_text = text.strip()
+        cached = tts_cache.get("tiktok", self._voice, "tts-1", cache_key_text, self._target_sr)
+        if cached is not None:
+            if not self._interrupted:
+                sub_q.put_nowait(cached)
+            sub_q.put_nowait(None)
+            return
+
         async with self._synth_semaphore:
             try:
                 cleaned = self._prepare_text(text)
                 chunks = self._chunk_text(cleaned, self._CHAR_LIMIT)
 
+                all_pcm = []
                 for chunk in chunks:
                     if self._interrupted or not self._running:
                         return
@@ -265,6 +277,15 @@ class TikTokTTSProvider:
                     pcm = self._decode_mp3_b64(data["data"])
                     if pcm and not self._interrupted:
                         sub_q.put_nowait(pcm)
+                        all_pcm.append(pcm)
+
+                # Cache the concatenated output
+                if all_pcm and not self._interrupted:
+                    full_pcm = b"".join(all_pcm)
+                    tts_cache.put(
+                        "tiktok", self._voice, "tts-1",
+                        cache_key_text, self._target_sr, full_pcm,
+                    )
 
             except httpx.ConnectError:
                 logger.error("Cannot connect to TikTok TTS API")

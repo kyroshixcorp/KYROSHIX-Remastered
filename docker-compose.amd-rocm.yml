@@ -1,0 +1,32 @@
+services:
+  gabriel:
+    build:
+      context: .
+      dockerfile: Dockerfile.rocm
+    init: true
+    restart: unless-stopped
+    network_mode: host
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    environment:
+      PULSE_SERVER: unix:/run/pulse/native
+      SDL_AUDIODRIVER: pulse
+      HOME: /app/data/home
+      HF_HOME: /app/data/huggingface
+      NLTK_DATA: /app/data/nltk_data
+      TORCH_HOME: /app/data/torch
+      HSA_OVERRIDE_GFX_VERSION: "11.0.0"
+      HIP_VISIBLE_DEVICES: "0"
+      GGML_BACKEND: Vulkan0
+    volumes:
+      - ./config.yml:/app/config.yml:ro
+      - ./config:/app/config
+      - ./discord_bot/config.yml:/app/discord_bot/config.yml:ro
+      - ./discord_bot/prompts:/app/discord_bot/prompts:ro
+      - ./discord_bot/data:/app/discord_bot/data
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./plugins:/app/plugins
+      - ./sfx:/app/sfx
+      - ${PULSE_SOCKET:-/run/user/1000/pulse/native}:/run/pulse/native:ro

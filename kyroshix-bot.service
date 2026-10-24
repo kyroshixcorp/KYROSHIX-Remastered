@@ -1,0 +1,23 @@
+[Unit]
+Description=KYROSHIX-Remastered VRChat AI Bot (AMD ROCm / Docker)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kyroshix
+WorkingDirectory=/home/kyroshix/KYROSHIX-Remastered
+ExecStartPre=/usr/bin/docker compose -f docker-compose.amd-rocm.yml pull
+ExecStart=/usr/bin/docker compose -f docker-compose.amd-rocm.yml up
+ExecStop=/usr/bin/docker compose -f docker-compose.amd-rocm.yml down
+Restart=always
+RestartSec=10
+# GPU device access for AMD ROCm
+SupplementaryGroups=video render
+Environment=HOME=/home/kyroshix
+# Keep logs managed by journald
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -9,6 +9,7 @@ import numpy as np
 from stream2sentence import generate_sentences
 
 from ._helpers import _resample, _strip_audio_tags, _strip_emojis
+from .cache import tts_cache
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +59,9 @@ class HoppouTTSProvider:
         import nltk
         nltk.download('punkt_tab', quiet=True)
         self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0),
+            timeout=httpx.Timeout(connect=5.0, read=20.0, write=5.0, pool=5.0),
             follow_redirects=True,
+            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
         )
         self._splitter_thread = threading.Thread(target=self._splitter_loop, daemon=True)
         self._splitter_thread.start()
@@ -230,6 +232,15 @@ class HoppouTTSProvider:
             sub_q.put_nowait(None)
             return
 
+        # Check cache first to avoid redundant network synthesis
+        cache_key_text = text.strip()
+        cached = tts_cache.get("hoppou", self._voice, self._model, cache_key_text, self._target_sr)
+        if cached is not None:
+            if not self._interrupted:
+                sub_q.put_nowait(cached)
+            sub_q.put_nowait(None)
+            return
+
         async with self._synth_semaphore:
             try:
                 async with self._client.stream(
@@ -247,13 +258,24 @@ class HoppouTTSProvider:
                     },
                 ) as resp:
                     resp.raise_for_status()
+                    chunks = []
                     async for chunk in resp.aiter_bytes(chunk_size=4096):
                         if self._interrupted or not self._running:
                             return
                         if chunk:
+                            chunks.append(chunk)
                             pcm = self._int16_to_playback(chunk)
                             if pcm:
                                 sub_q.put_nowait(pcm)
+                    # Cache the full PCM output for future identical requests
+                    if chunks and not self._interrupted:
+                        full_data = b"".join(chunks)
+                        full_pcm = self._int16_to_playback(full_data)
+                        if full_pcm is not None:
+                            tts_cache.put(
+                                "hoppou", self._voice, self._model,
+                                cache_key_text, self._target_sr, full_pcm,
+                            )
             except httpx.ConnectError:
                 logger.error("Cannot connect to Hoppou TTS at %s", self._api_url)
             except httpx.TimeoutException:

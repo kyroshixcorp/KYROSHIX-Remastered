@@ -8,9 +8,10 @@ import Players from './pages/Players'
 import Mapping from './pages/Mapping'
 import Waypoints from './pages/Waypoints'
 import Vision from './pages/Vision'
+import SystemHealth from './pages/SystemHealth'
 import Toast, { type ToastItem } from './components/Toast'
 
-type Tab = 'dashboard' | 'memories' | 'music' | 'players' | 'mapping' | 'waypoints' | 'vision'
+type Tab = 'dashboard' | 'memories' | 'music' | 'players' | 'mapping' | 'waypoints' | 'vision' | 'health'
 
 let toastId = 0
 
@@ -47,6 +48,7 @@ export default function App() {
         {tab === 'mapping' && <Mapping onToast={addToast} />}
         {tab === 'waypoints' && <Waypoints onToast={addToast} />}
         {tab === 'vision' && <Vision onToast={addToast} />}
+        {tab === 'health' && <SystemHealth state={state} onToast={addToast} />}
       </main>
       <Toast toasts={toasts} />
     </div>

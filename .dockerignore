@@ -14,4 +14,5 @@ discord_bot/prompts/*.yml
 data/**
 models/**
 sfx/**
-plugins/**
+# plugins/**
+!plugins/omnivoice_cpp_tts/**

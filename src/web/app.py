@@ -6,9 +6,6 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
-import time
-from collections import defaultdict, deque
-import threading
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -17,8 +14,10 @@ from fastapi.staticfiles import StaticFiles
 
 from .auth import request_authenticated
 from .shared import shared_state
+from ..security import security
 from .routes import (
     core_router,
+    health_router,
     mapping_router,
     memory_router,
     music_router,
@@ -47,11 +46,6 @@ STATIC_DIR = PROJECT_ROOT / "webui"
 CONTROL_PANEL_HOST = "127.0.0.1"
 CONTROL_PANEL_PORT = 8766
 PUBLIC_HOST = "kyroshix-bot.uaru-elver.ts.net"
-MAX_CONTENT_LENGTH = 16 * 1024 * 1024
-GLOBAL_WINDOW_SECONDS = 10
-GLOBAL_MAX_REQUESTS = 250
-_rate_buckets: dict[str, deque[float]] = defaultdict(deque)
-_rate_lock = threading.RLock()
 
 # HTTP methods that are expected by the application.
 ALLOWED_HTTP_METHODS = {
@@ -222,38 +216,32 @@ async def security_middleware(
     path = request.url.path
     method = request.method.upper()
 
-    # The backend is loopback-only; Funnel is the intended public ingress.
-    # Limit obvious request floods before expensive handlers execute.
+    # DDoS / brute-force protection via SecurityManager (per-IP token bucket)
     key = request.client.host if request.client else "unknown"
-    now = time.monotonic()
-    with _rate_lock:
-        bucket = _rate_buckets[key]
-        while bucket and now - bucket[0] > GLOBAL_WINDOW_SECONDS:
-            bucket.popleft()
-        if len(bucket) >= GLOBAL_MAX_REQUESTS:
-            response = JSONResponse(
-                status_code=429,
-                content={"detail": "Too many requests"},
-                headers={"Retry-After": "10"},
-            )
-            _add_security_headers(response, authenticated=True)
-            return response
-        bucket.append(now)
+    is_login = path == "/auth/login"
 
+    allowed, reason = security.check_http(key, endpoint="login" if is_login else "")
+    if not allowed:
+        response = JSONResponse(
+            status_code=429,
+            content={"detail": f"Rate limited: {reason}"},
+            headers={"Retry-After": "10"},
+        )
+        _add_security_headers(response, authenticated=True)
+        return response
+
+    # Request size limit
     content_length = request.headers.get("content-length")
-    if content_length:
-        try:
-            if int(content_length) > MAX_CONTENT_LENGTH:
-                response = JSONResponse(
-                    status_code=413,
-                    content={"detail": "Request too large"},
-                )
-                _add_security_headers(response, authenticated=True)
-                return response
-        except ValueError:
-            response = JSONResponse(status_code=400, content={"detail": "Invalid Content-Length"})
-            _add_security_headers(response, authenticated=True)
-            return response
+    ok_size, size_reason = security.check_request_size(
+        int(content_length) if content_length else None
+    )
+    if not ok_size:
+        response = JSONResponse(
+            status_code=413,
+            content={"detail": size_reason},
+        )
+        _add_security_headers(response, authenticated=True)
+        return response
 
 
     # Reject unexpected HTTP verbs early.
@@ -370,6 +358,7 @@ app.mount(
 
 app.include_router(pages_router)
 app.include_router(core_router)
+app.include_router(health_router)
 app.include_router(music_router)
 app.include_router(memory_router)
 app.include_router(vrchat_router)

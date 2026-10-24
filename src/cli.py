@@ -55,7 +55,7 @@ class ColoredFormatter(logging.Formatter):
 
 
 def setup_logging(level=logging.INFO):
-    """Replace default logging with colored output."""
+    """Replace default logging with colored output + rotating file log."""
     _enable_ansi()
     root = logging.getLogger()
     root.setLevel(level)
@@ -64,6 +64,24 @@ def setup_logging(level=logging.INFO):
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(ColoredFormatter())
     root.addHandler(handler)
+
+    # Rotating file log: keeps last 5 files of 10 MB each, so 24/7 uptime
+    # does not fill the disk. Falls back gracefully if data/ is not writable.
+    try:
+        from pathlib import Path
+        Path("data").mkdir(parents=True, exist_ok=True)
+        from logging.handlers import RotatingFileHandler
+        file_handler = RotatingFileHandler(
+            "data/gabriel.log", maxBytes=10 * 1024 * 1024, backupCount=5,
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+        root.addHandler(file_handler)
+    except Exception:
+        pass
 
     # quiet down chatty third party libs that the everyday user does not
     # care about. selfbot internals (TLS fingerprint, user agent string,

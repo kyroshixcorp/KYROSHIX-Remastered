@@ -12,6 +12,7 @@ Providers:
 """
 
 from ._helpers import _strip_audio_tags, _strip_emojis
+from .cache import tts_cache
 from .chirp3hd import Chirp3HDTTSProvider
 from .hoppou import HoppouTTSProvider
 from .tiktok import TikTokTTSProvider
@@ -20,6 +21,7 @@ __all__ = [
     "HoppouTTSProvider",
     "Chirp3HDTTSProvider",
     "TikTokTTSProvider",
+    "tts_cache",
     "_strip_emojis",
     "_strip_audio_tags",
 ]

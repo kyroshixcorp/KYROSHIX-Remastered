@@ -1,3 +1,4 @@
+import os
 import yaml
 import logging
 from datetime import datetime
@@ -44,12 +45,28 @@ _SYSTEM_INSTRUCTION_RULE = (
 
 class Config:
     def __init__(self, path="config.yml"):
-        with open(path, "r", encoding="utf-8") as f:
-            self._data = yaml.safe_load(f)
-        self._keys = [self._data["gemini"]["api_key"]]
-        backup = self._data["gemini"].get("backup_keys") or []
+        self._data = {}
+        self._config_path = path
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f) or {}
+            if isinstance(loaded, dict):
+                self._data = loaded
+        except FileNotFoundError:
+            logger.warning(f"config.yml not found at {path}; running with safe defaults")
+        except Exception as exc:
+            logger.warning(f"failed to load config.yml ({exc}); running with safe defaults")
+
+        # Gemini API keys: config.yml first, env override GABRIEL_GEMINI_API_KEY next.
+        gemini = self._data.get("gemini") or {}
+        primary = gemini.get("api_key") or os.environ.get("GABRIEL_GEMINI_API_KEY", "")
+        self._keys = [primary] if primary else []
+        backup = gemini.get("backup_keys") or []
         if backup:
             self._keys.extend(backup)
+        env_backup = os.environ.get("GABRIEL_GEMINI_BACKUP_KEYS", "")
+        if env_backup:
+            self._keys.extend([k.strip() for k in env_backup.split(",") if k.strip()])
         self._key_index = 0
         self._grounding_disabled = False
         self._prompts = self._load_prompts()
@@ -697,6 +714,47 @@ class Config:
     def session_replay_messages(self):
         """Number of recent user/assistant messages to replay as context on fresh reconnect."""
         return self.get("gemini", "session", "replay_messages", default=10)
+
+    @property
+    def session_max_seconds(self):
+        """Max seconds a single Gemini Live session stays open before graceful reconnect (24/7). 0 = disabled."""
+        return int(self.get("gemini", "session", "session_max_seconds", default=3600))
+
+    @property
+    def health_check_seconds(self):
+        """Seconds between health watchdog checks."""
+        return int(self.get("gemini", "session", "health_check_seconds", default=30))
+
+    @property
+    def dead_socket_seconds(self):
+        """Seconds of no received audio before considering the socket dead and reconnecting."""
+        return int(self.get("gemini", "session", "dead_socket_seconds", default=120))
+
+    @property
+    def max_audio_recording_bytes(self):
+        """Cap for in-memory debug audio recording (bytes)."""
+        return int(self.get("gemini", "session", "max_audio_recording_bytes", default=67108864))
+
+    @property
+    def max_transcript_buffer_chars(self):
+        """Cap for in-memory transcript buffers (chars)."""
+        return int(self.get("gemini", "session", "max_transcript_buffer_chars", default=20000))
+
+    @property
+    def memory_backend(self):
+        return (self.get("memory", "backend", default="sqlite") or "sqlite").lower()
+
+    @property
+    def memory_sqlite_path(self):
+        return self.get("memory", "sqlite_path", default="data/gabriel_memories.sqlite")
+
+    @property
+    def memory_rag_enabled(self):
+        return bool(self.get("memory", "rag_enabled", default=False))
+
+    @property
+    def memory_rag_provider(self):
+        return (self.get("memory", "rag_provider", default="gemini") or "gemini").lower()
 
     @property
     def compression_enabled(self):

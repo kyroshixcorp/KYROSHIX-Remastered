@@ -13,6 +13,7 @@ from ._helpers import (
     _hash_content,
 )
 from .system import memory_system
+from .intelligence import intelligence_system
 
 logger = logging.getLogger(__name__)
 
@@ -21,18 +22,18 @@ logger = logging.getLogger(__name__)
 MEMORY_FUNCTION_DECLARATIONS = [
     {
         "name": "memory",
-        "description": "Persistent memory system. Actions: save, read, update, delete, list, search, stats, cleanup, pin, promote. Memory types: 'long_term' (permanent), 'short_term' (7 days), 'quick_note' (6 hours).",
+        "description": "Advanced persistent memory system with intelligence. Actions: save, read, update, delete, list, search, search_fts, stats, cleanup, pin, promote, link, linked, decay, summarize, entities, recall_intelligent, confidence. Memory types: 'long_term' (permanent), 'short_term' (7 days), 'quick_note' (6 hours).",
         "parameters": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["save", "read", "update", "delete", "list", "search", "stats", "cleanup", "pin", "promote"],
+                    "enum": ["save", "read", "update", "delete", "list", "search", "search_fts", "stats", "cleanup", "pin", "promote", "link", "linked", "decay", "summarize", "entities", "recall_intelligent", "confidence"],
                     "description": "Memory operation to perform"
                 },
                 "key": {
                     "type": "string",
-                    "description": "Memory identifier (required for save/read/update/delete/pin/promote)"
+                    "description": "Memory identifier (required for save/read/update/delete/pin/promote/link/linked/entities/confidence)"
                 },
                 "content": {
                     "type": "string",
@@ -54,7 +55,7 @@ MEMORY_FUNCTION_DECLARATIONS = [
                 },
                 "search_term": {
                     "type": "string",
-                    "description": "Search query (for search action)"
+                    "description": "Search query (for search/search_fts action)"
                 },
                 "limit": {
                     "type": "integer",
@@ -68,6 +69,26 @@ MEMORY_FUNCTION_DECLARATIONS = [
                 "pin": {
                     "type": "boolean",
                     "description": "Pin status for pin action (pinned memories won't be auto-deleted)"
+                },
+                "other_key": {
+                    "type": "string",
+                    "description": "Second memory key for link action"
+                },
+                "relation": {
+                    "type": "string",
+                    "description": "Relation type for link action (default: 'related')"
+                },
+                "query_context": {
+                    "type": "string",
+                    "description": "Context query for recall_intelligent/confidence actions"
+                },
+                "min_importance": {
+                    "type": "number",
+                    "description": "Minimum importance threshold for recall_intelligent (default: 15.0)"
+                },
+                "include_linked": {
+                    "type": "boolean",
+                    "description": "Include linked memories in recall_intelligent (default: true)"
                 }
             },
             "required": ["action"]
@@ -251,6 +272,104 @@ async def handle_memory_function_call(function_call) -> Dict[str, Any]:
             else:
                 res = memory_system.update(key=key, memory_type=new_type)
                 result = {"result": "ok"} if res.get("success") else {"result": "error", "message": res.get("message")}
+
+        elif action == "search_fts":
+            if not search_term:
+                result = {"result": "error", "message": "searchTerm required"}
+            else:
+                res = memory_system.search_fts(
+                    term=search_term,
+                    memory_type=memory_type_raw,
+                    limit=args.get("limit", 20)
+                )
+                if res.get("success"):
+                    result = {"result": "ok", "memories": res.get("memories"), "count": res.get("count"), "method": res.get("method")}
+                else:
+                    result = {"result": "error", "message": res.get("message")}
+
+        elif action == "link":
+            key = args.get("key")
+            other_key = args.get("other_key")
+            relation = args.get("relation", "related")
+            if not key or not other_key:
+                result = {"result": "error", "message": "key and otherKey required"}
+            else:
+                res = intelligence_system.link_memories(key, other_key, relation)
+                result = {"result": "ok"} if res.get("success") else {"result": "error", "message": res.get("message")}
+
+        elif action == "linked":
+            key = args.get("key")
+            if not key:
+                result = {"result": "error", "message": "key required"}
+            else:
+                linked = intelligence_system.get_linked_memories(key, limit=args.get("limit", 10))
+                result = {"result": "ok", "memories": linked, "count": len(linked)}
+
+        elif action == "decay":
+            res = intelligence_system.apply_decay()
+            result = {"result": "ok", "decayed": res.get("decayed", 0)}
+
+        elif action == "summarize":
+            max_age = args.get("max_age_days", 5)
+            batch = args.get("limit", 20)
+            res = intelligence_system.auto_summarize_old_short_term(max_age_days=max_age, batch_size=batch)
+            result = {"result": "ok"} if res.get("success") else {"result": "error", "message": res.get("message")}
+
+        elif action == "entities":
+            key = args.get("key")
+            content = args.get("content")
+            if not key:
+                result = {"result": "error", "message": "key required"}
+            elif content:
+                res = intelligence_system.tag_memory_with_entities(key, content)
+                result = {"result": "ok"} if res.get("success") else {"result": "error", "message": res.get("message")}
+            else:
+                read_res = memory_system.read(key)
+                if not read_res.get("success"):
+                    result = {"result": "error", "message": read_res.get("message")}
+                else:
+                    ents = intelligence_system.extract_entities(read_res["memory"].get("content", ""))
+                    result = {"result": "ok", "entities": ents}
+
+        elif action == "recall_intelligent":
+            if not search_term:
+                result = {"result": "error", "message": "searchTerm required"}
+            else:
+                res = intelligence_system.recall_context_aware(
+                    query=search_term,
+                    limit=args.get("limit", 15),
+                    min_importance=float(args.get("min_importance", 15.0)),
+                    include_linked=bool(args.get("include_linked", True)),
+                    boost_recent=True,
+                )
+                if res.get("success"):
+                    # Format for model consumption
+                    lines = []
+                    for m in res.get("memories", []):
+                        prefix = f"[{m.get('key', '?')}] ({m.get('category', 'general')}) [imp:{m.get('importance', 0)}] [conf:{m.get('confidence', 0)}]"
+                        lines.append(f"{prefix}: {m.get('content', '')}")
+                    result = {
+                        "result": "ok",
+                        "memories": "\n".join(lines),
+                        "count": res.get("count", 0),
+                        "method": "context_aware_intelligent",
+                    }
+                else:
+                    result = {"result": "error", "message": res.get("message")}
+
+        elif action == "confidence":
+            key = args.get("key")
+            query_context = args.get("query_context", "")
+            if not key:
+                result = {"result": "error", "message": "key required"}
+            else:
+                read_res = memory_system.read(key)
+                if not read_res.get("success"):
+                    result = {"result": "error", "message": read_res.get("message")}
+                else:
+                    conf = intelligence_system.score_confidence(read_res["memory"], query_context)
+                    imp = intelligence_system.compute_importance(read_res["memory"])
+                    result = {"result": "ok", "confidence": conf, "importance": imp}
 
         else:
             result = {"result": "error", "message": f"Unknown action: {action}"}

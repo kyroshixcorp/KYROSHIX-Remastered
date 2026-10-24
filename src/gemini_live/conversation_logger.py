@@ -28,6 +28,9 @@ class ConversationLogger:
         self._lock = threading.Lock()
         self._pending_user_idx = None
         self._file_path = None
+        # Cap in-memory entries so a 24/7 session does not grow RAM forever.
+        # Disk already persists every entry; keep only a working window for replay.
+        self._max_memory_entries = 500
         if self.enabled:
             CONVERSATION_DIR.mkdir(parents=True, exist_ok=True)
             self._file_path = CONVERSATION_DIR / f"{self._session_start.strftime('%Y-%m-%d_%H-%M-%S')}.json"
@@ -37,6 +40,17 @@ class ConversationLogger:
             return
         self._system_instruction = text
         self._save_async()
+
+    def _enforce_cap(self):
+        """Drop oldest entries past the in-memory cap (disk retains them)."""
+        if len(self._entries) > self._max_memory_entries:
+            drop = len(self._entries) - self._max_memory_entries
+            del self._entries[:drop]
+            # Adjust pending index if it pointed into dropped region
+            if self._pending_user_idx is not None:
+                self._pending_user_idx = max(0, self._pending_user_idx - drop)
+                if self._pending_user_idx >= len(self._entries):
+                    self._pending_user_idx = None
 
     def stream_user_message(self, text: str):
         """Update user message in-place or create new entry. Called on each transcription event.
@@ -56,6 +70,7 @@ class ConversationLogger:
                     "content": text,
                     "timestamp": datetime.now().isoformat(),
                 })
+            self._enforce_cap()
 
     def finalize_user_message(self):
         """Reset pending index so next stream call creates a new entry."""
@@ -76,6 +91,7 @@ class ConversationLogger:
                 "content": text,
                 "timestamp": datetime.now().isoformat(),
             })
+            self._enforce_cap()
         self._save_async()
 
     def add_assistant_message(self, text: str):
@@ -90,6 +106,7 @@ class ConversationLogger:
                 "content": text,
                 "timestamp": datetime.now().isoformat(),
             })
+            self._enforce_cap()
         self._save_async()
 
     def add_tool_call(self, name: str, args: dict):
@@ -102,6 +119,7 @@ class ConversationLogger:
                 "arguments": args,
                 "timestamp": datetime.now().isoformat(),
             })
+            self._enforce_cap()
         self._save_async()
 
     def add_tool_response(self, name: str, response: dict):
@@ -114,6 +132,7 @@ class ConversationLogger:
                 "response": response,
                 "timestamp": datetime.now().isoformat(),
             })
+            self._enforce_cap()
         self._save_async()
 
     def _save_async(self):

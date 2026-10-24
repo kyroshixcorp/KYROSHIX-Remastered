@@ -118,7 +118,15 @@ class ReceiveLoopMixin:
                                     self._wanderer.on_ai_speaking()
                                 # When using external TTS, discard Gemini audio
                                 if not self._tts:
-                                    await self._audio_in_queue.put(part.inline_data.data)
+                                    try:
+                                        self._audio_in_queue.put_nowait(part.inline_data.data)
+                                    except asyncio.QueueFull:
+                                        # Drop oldest audio chunk to keep RAM bounded under backpressure
+                                        try:
+                                            self._audio_in_queue.get_nowait()
+                                        except asyncio.QueueEmpty:
+                                            pass
+                                        self._audio_in_queue.put_nowait(part.inline_data.data)
 
                     # Handle input transcription (user speech) - cumulative stream
                     if (
@@ -138,6 +146,10 @@ class ReceiveLoopMixin:
                                 self._wanderer.on_speech_activity()
                             # Input transcription arrives as chunks - accumulate like output
                             self._input_transcript_buffer += input_trans.text
+                            # Cap in-memory transcript buffer (disk/logger already keeps it)
+                            cap = int(getattr(self.config, "max_transcript_buffer_chars", 20000))
+                            if len(self._input_transcript_buffer) > cap:
+                                self._input_transcript_buffer = self._input_transcript_buffer[-cap:]
                             # Broadcast chunk to WebUI (it appends via +=)
                             _broadcast_console("transcription", input_trans.text, {"streaming": True})
                             # Update logger with full accumulated text (replaces in-place)
@@ -152,6 +164,10 @@ class ReceiveLoopMixin:
                         transcription = response.server_content.output_transcription
                         if hasattr(transcription, "text") and transcription.text:
                             self._transcript_buffer += transcription.text
+                            # Cap in-memory transcript buffer (disk/logger already keeps it)
+                            cap = int(getattr(self.config, "max_transcript_buffer_chars", 20000))
+                            if len(self._transcript_buffer) > cap:
+                                self._transcript_buffer = self._transcript_buffer[-cap:]
                             self._update_chatbox()
                             # Also stream to console in real-time
                             _broadcast_console("response", transcription.text, {"streaming": True})

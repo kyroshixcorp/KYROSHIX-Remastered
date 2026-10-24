@@ -6,7 +6,9 @@ plugin_target=/app/plugins/omnivoice_cpp_tts
 
 if [ ! -f "$plugin_target/plugin.yml" ]; then
     mkdir -p /app/plugins
-    cp -a "$plugin_source" "$plugin_target"
+    if [ -d "$plugin_source" ]; then
+        cp -a "$plugin_source" "$plugin_target"
+    fi
 fi
 
 exec "$@"

@@ -36,6 +36,8 @@ from .tools import (
     handle_memory_function_call,
     recall_memories,
 )
+from .intelligence import IntelligenceSystem, intelligence_system
+from .cognitive import CognitiveSystem, cognitive_system
 
 __all__ = [
     "MemorySystem",
@@ -50,4 +52,8 @@ __all__ = [
     "recall_memories",
     "format_memories_for_prompt",
     "get_memory_content_for_prompt",
+    "IntelligenceSystem",
+    "intelligence_system",
+    "CognitiveSystem",
+    "cognitive_system",
 ]

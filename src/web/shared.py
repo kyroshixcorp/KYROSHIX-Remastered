@@ -9,7 +9,6 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-
 from fastapi import WebSocket
 
 SESSION_HANDLE_FILE = Path("data/session_handle.txt")
@@ -191,6 +190,29 @@ def get_full_state() -> dict:
             "players": [{"name": p.get("name", "Unknown"), "id": p.get("id", "")} for p in players],
         }
 
+    # System health snapshot
+    health_info = None
+    try:
+        from .routes.health import _read_meminfo, _gpu_info, _uptime_seconds
+        mem = _read_meminfo()
+        total = mem.get("MemTotal", 0)
+        available = mem.get("MemAvailable", 0)
+        used = total - available if total and available else 0
+        ram_percent = round((used / total) * 100, 1) if total else None
+        health_info = {
+            "uptime_seconds": round(_uptime_seconds(), 1),
+            "ram": {
+                "total_bytes": total,
+                "available_bytes": available,
+                "used_bytes": used,
+                "free_bytes": mem.get("MemFree", 0),
+                "percent": ram_percent,
+            },
+            "gpu": _gpu_info(),
+        }
+    except Exception:
+        pass
+
     return {
         "app_name": app_name,
         "is_connected": is_connected,
@@ -203,4 +225,5 @@ def get_full_state() -> dict:
         "music_progress": music_progress,
         "recent_memories": recent_memories,
         "vrchat": vrchat_info,
+        "health": health_info,
     }

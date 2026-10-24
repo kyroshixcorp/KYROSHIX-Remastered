@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import threading
-import time
-from collections import defaultdict, deque
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
@@ -16,18 +13,11 @@ from ..auth import (
     SESSION_COOKIE, SESSION_MAX_AGE, auth_configured, create_session,
     destroy_session, request_authenticated, verify_credentials,
 )
+from ..security import security
 from ..shared import shared_state
 
 STATIC_DIR = Path(__file__).resolve().parent.parent.parent.parent / "webui"
 router = APIRouter()
-
-LOGIN_WINDOW_SECONDS = 60
-LOGIN_MAX_ATTEMPTS = 8
-LOGIN_BLOCK_SECONDS = 120
-MAX_TRACKED_CLIENTS = 2048
-_attempts: dict[str, deque[float]] = defaultdict(deque)
-_blocked_until: dict[str, float] = {}
-_attempt_lock = threading.RLock()
 
 
 class LoginInput(BaseModel):
@@ -39,39 +29,6 @@ class LoginInput(BaseModel):
 def _client_key(request: Request) -> str:
     # Funnel is the only public ingress. Do not trust spoofable forwarding headers.
     return request.client.host if request.client else "unknown"
-
-
-def _rate_state(key: str) -> tuple[bool, int]:
-    now = time.monotonic()
-    with _attempt_lock:
-        until = _blocked_until.get(key, 0.0)
-        if until > now:
-            return False, max(1, int(until - now))
-        _blocked_until.pop(key, None)
-        q = _attempts[key]
-        while q and now - q[0] > LOGIN_WINDOW_SECONDS:
-            q.popleft()
-        if len(q) >= LOGIN_MAX_ATTEMPTS:
-            _blocked_until[key] = now + LOGIN_BLOCK_SECONDS
-            q.clear()
-            return False, LOGIN_BLOCK_SECONDS
-        if len(_attempts) > MAX_TRACKED_CLIENTS:
-            for stale in list(_attempts)[: len(_attempts) // 4]:
-                if not _attempts[stale]:
-                    _attempts.pop(stale, None)
-                    _blocked_until.pop(stale, None)
-        return True, 0
-
-
-def _record_failure(key: str) -> None:
-    with _attempt_lock:
-        _attempts[key].append(time.monotonic())
-
-
-def _clear_failures(key: str) -> None:
-    with _attempt_lock:
-        _attempts.pop(key, None)
-        _blocked_until.pop(key, None)
 
 
 def _require_obs():
@@ -99,12 +56,12 @@ async def login_page(request: Request):
 @router.post("/auth/login")
 async def login(body: LoginInput, request: Request):
     key = _client_key(request)
-    allowed, retry = _rate_state(key)
+    allowed, reason = security.check_http(key, endpoint="login")
     if not allowed:
         return JSONResponse(
             status_code=429,
-            content={"detail": "Too many login attempts. Try again later."},
-            headers={"Retry-After": str(retry), "Cache-Control": "no-store"},
+            content={"detail": f"Too many login attempts: {reason}. Try again later."},
+            headers={"Retry-After": "10", "Cache-Control": "no-store"},
         )
     if not auth_configured():
         return JSONResponse(status_code=503, content={"detail": "Web authentication is not configured"})
@@ -113,11 +70,11 @@ async def login(body: LoginInput, request: Request):
         verify_credentials, body.username.strip(), body.password
     )
     if not valid:
-        _record_failure(key)
+        security.record_login_failure(key)
         await asyncio.sleep(0.35)
         return JSONResponse(status_code=401, content={"detail": "Invalid username or password"})
 
-    _clear_failures(key)
+    security.record_login_success(key)
     old = request.cookies.get(SESSION_COOKIE)
     destroy_session(old)
     token = create_session()

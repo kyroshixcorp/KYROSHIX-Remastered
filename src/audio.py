@@ -21,6 +21,58 @@ MUSIC_FADEOUT_END = 10.0
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac", ".wma"}
 
+# Soft-knee limiter ceiling (as fraction of full-scale int16). Prevents
+# clipping/distortion when boost + gain push samples above 32767.
+_LIMITER_CEILING = 0.95
+# Target RMS for voice normalization (0.0-1.0 of full scale).
+_VOICE_TARGET_RMS = 0.25
+
+
+def _remove_dc_offset(samples: np.ndarray) -> np.ndarray:
+    """Remove DC offset from a float32 sample array."""
+    if len(samples) == 0:
+        return samples
+    return samples - np.mean(samples)
+
+
+def _soft_limit(samples: np.ndarray, ceiling: float = _LIMITER_CEILING) -> np.ndarray:
+    """Apply a soft-knee limiter to avoid hard clipping.
+
+    Samples below the ceiling pass through unchanged. Above the knee the
+    curve compresses smoothly toward the ceiling so loud transients don't
+    square off audibly.
+    """
+    if len(samples) == 0:
+        return samples
+    max_val = 32767.0
+    limit = ceiling * max_val
+    knee = limit * 0.6  # start compressing at 60% of ceiling
+    out = samples.copy()
+    over = np.abs(out) > knee
+    if not np.any(over):
+        return out
+    # Soft knee: compress the excess above the knee with a gentle curve.
+    excess = np.abs(out[over]) - knee
+    compressed = knee + (1.0 - np.exp(-excess / (limit * 0.15))) * (limit * 0.4)
+    compressed = np.minimum(compressed, limit - knee)
+    out[over] = np.sign(out[over]) * (knee + compressed)
+    return out
+
+
+def _normalize_rms(samples: np.ndarray, target_rms: float = _VOICE_TARGET_RMS) -> np.ndarray:
+    """Normalize RMS toward a target level without amplifying silence."""
+    if len(samples) == 0:
+        return samples
+    rms = np.sqrt(np.mean(samples ** 2))
+    if rms < 1e-6:
+        return samples
+    max_val = 32767.0
+    target = target_rms * max_val
+    gain = target / rms
+    # Only apply gentle gain, never amplify beyond 2x or attenuate below 0.5x
+    gain = float(np.clip(gain, 0.5, 2.0))
+    return samples * gain
+
 
 class _PitchShifter:
     """Pedalboard-based streaming pitch shifter."""
@@ -233,6 +285,16 @@ class AudioManager:
         self._external_music_active = False
         self._external_music_started_at: float | None = None
         self._setup_devices()
+        self.apply_performance_settings()
+
+    def apply_performance_settings(self):
+        """Apply low-latency / low-resource settings from config.performance."""
+        perf = getattr(self.config, "performance", None) or {}
+        chunk_size = int(perf.get("audio_chunk_size", 512) or 512)
+        self.chunk_size = chunk_size
+        # Enable low-quality processing when configured for max speed
+        if bool(perf.get("low_quality_audio", False)):
+            self.set_low_quality(True)
 
     def _find_first_device(self, device_type: str):
         try:
@@ -455,6 +517,9 @@ class AudioManager:
 
         samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
 
+        # Remove DC offset to prevent clicks/pops at output boundaries
+        samples = _remove_dc_offset(samples)
+
         if self.boost_level > 0:
             gain = 1.0 + (self.boost_level * 0.8)
             samples *= gain
@@ -477,6 +542,12 @@ class AudioManager:
 
         if voice_mult < 1.0:
             samples *= voice_mult
+
+        # Gentle RMS normalization toward a comfortable voice level
+        samples = _normalize_rms(samples)
+
+        # Soft-knee limiter to prevent hard clipping/distortion
+        samples = _soft_limit(samples)
 
         if (
             self._pitch_semitones != 0.0
@@ -1329,3 +1400,75 @@ class AudioManager:
             self._pygame_ready = False
 
         self.pya.terminate()
+
+    # ------------------------------------------------------------------
+    # Input audio processing (microphone)
+    # ------------------------------------------------------------------
+    def process_input_audio(self, data: bytes) -> bytes:
+        """Apply noise gate and normalization to microphone input.
+
+        Returns silence (zeros) when the input is below the noise gate
+        threshold, so background hiss doesn't reach the STT/VAD.
+        """
+        if not data:
+            return data
+        samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+        if len(samples) == 0:
+            return data
+
+        # Noise gate: silence below ~3% of full scale
+        gate = 32767.0 * 0.03
+        rms = np.sqrt(np.mean(samples ** 2))
+        if rms < gate:
+            return b"\x00" * len(data)
+
+        # Remove DC offset
+        samples = _remove_dc_offset(samples)
+
+        # Gentle normalization so quiet speech is still intelligible
+        samples = _normalize_rms(samples, target_rms=0.30)
+
+        samples = np.clip(samples, -32767, 32767).astype(np.int16)
+        return samples.tobytes()
+
+    def list_input_devices(self) -> list[dict]:
+        """List available audio input devices with index, name and channel count."""
+        devices = []
+        try:
+            count = self.pya.get_device_count()
+        except Exception:
+            return devices
+        for i in range(count):
+            try:
+                info = self.pya.get_device_info_by_index(i)
+            except Exception:
+                continue
+            if int(info.get("maxInputChannels", 0)) > 0:
+                devices.append({
+                    "index": i,
+                    "name": info.get("name", f"Device {i}"),
+                    "channels": int(info.get("maxInputChannels", 0)),
+                    "default_sample_rate": int(info.get("defaultSampleRate", 0)),
+                })
+        return devices
+
+    def list_output_devices(self) -> list[dict]:
+        """List available audio output devices with index, name and channel count."""
+        devices = []
+        try:
+            count = self.pya.get_device_count()
+        except Exception:
+            return devices
+        for i in range(count):
+            try:
+                info = self.pya.get_device_info_by_index(i)
+            except Exception:
+                continue
+            if int(info.get("maxOutputChannels", 0)) > 0:
+                devices.append({
+                    "index": i,
+                    "name": info.get("name", f"Device {i}"),
+                    "channels": int(info.get("maxOutputChannels", 0)),
+                    "default_sample_rate": int(info.get("defaultSampleRate", 0)),
+                })
+        return devices

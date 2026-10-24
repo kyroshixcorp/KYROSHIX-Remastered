@@ -108,6 +108,13 @@ class CRUDMixin:
             if self.rag_enabled and self.rag_provider == "local":
                 self._upsert_chroma(key, content, category, memory_type, tags_list, now.isoformat())
 
+            # Auto-tag with extracted entities (intelligence layer)
+            try:
+                from .intelligence import intelligence_system
+                intelligence_system.tag_memory_with_entities(key, content)
+            except Exception:
+                pass
+
             return {"success": True, "key": key, "memory_type": memory_type}
 
         except Exception as e:
@@ -535,3 +542,78 @@ class CRUDMixin:
         except Exception as e:
             logger.error(f"Get recent failed: {e}")
             return []
+
+    # ------------------------------------------------------------------
+    # FTS5 full-text search (SQLite only)
+    # ------------------------------------------------------------------
+    def _ensure_fts5(self):
+        """Create the FTS5 virtual table for full-text search if it doesn't exist."""
+        if self.backend != "sqlite" or not self.sqlite_conn:
+            return
+        try:
+            with self._sqlite_lock:
+                self.sqlite_conn.execute("""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
+                    USING fts5(key, content, category, content='memories', content_rowid='id')
+                """)
+                count = self.sqlite_conn.execute("SELECT COUNT(1) FROM memories_fts").fetchone()[0]
+                if count == 0:
+                    self.sqlite_conn.execute(
+                        "INSERT INTO memories_fts(rowid, key, content, category) "
+                        "SELECT id, key, content, category FROM memories"
+                    )
+                self.sqlite_conn.commit()
+        except Exception as e:
+            logger.debug(f"FTS5 setup skipped: {e}")
+
+    def search_fts(self, term: str, memory_type: Optional[str] = None, limit: int = 20) -> Dict[str, Any]:
+        """Full-text search using SQLite FTS5 (fast, supports prefix queries)."""
+        if not self.is_available() or self.backend != "sqlite":
+            return {"success": False, "message": "FTS5 search requires SQLite backend"}
+
+        try:
+            self._ensure_fts5()
+            where = []
+            params: List[Any] = []
+            if memory_type:
+                where.append("m.memory_type = ?")
+                params.append(memory_type)
+
+            where_sql = f" AND {' AND '.join(where)}" if where else ""
+            params.append(limit)
+
+            with self._sqlite_lock:
+                rows = self.sqlite_conn.execute(
+                    f"""
+                    SELECT m.key, m.content, m.category, m.memory_type, m.tags_json,
+                           m.created_at, m.access_count,
+                           bm25(memories_fts) as rank
+                    FROM memories_fts
+                    JOIN memories m ON m.key = memories_fts.key
+                    WHERE memories_fts MATCH ?{where_sql}
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    [term, *params],
+                ).fetchall()
+
+            memories = []
+            for row in rows:
+                content = row[1]
+                if len(content) > 200:
+                    content = content[:200] + "..."
+                memories.append({
+                    "key": row[0],
+                    "content": content,
+                    "category": row[2],
+                    "memory_type": row[3],
+                    "tags": json.loads(row[4]) if row[4] else [],
+                    "created_at": row[5],
+                    "access_count": row[6],
+                    "rank": round(row[7], 4),
+                })
+
+            return {"success": True, "memories": memories, "count": len(memories), "term": term, "method": "fts5"}
+        except Exception as e:
+            logger.error(f"FTS5 search failed: {e}")
+            return {"success": False, "message": str(e)}

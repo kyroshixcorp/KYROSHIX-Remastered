@@ -1,16 +1,8 @@
 import { HiOutlineWifi, HiOutlineStatusOffline } from 'react-icons/hi'
-import { RiDashboardLine, RiBrainLine, RiMusicLine } from 'react-icons/ri'
+import { RiDashboardLine, RiBrainLine, RiMusicLine, RiTimerLine } from 'react-icons/ri'
 import { TbMicrophoneOff, TbUsers, TbMap, TbMapPin, TbEye } from 'react-icons/tb'
 
-type Tab = 'dashboard' | 'memories' | 'music' | 'players' | 'mapping' | 'waypoints' | 'vision'
-
-interface NavbarProps {
-  appName: string
-  isConnected: boolean
-  isMuted: boolean
-  activeTab: Tab
-  onTabChange: (tab: Tab) => void
-}
+type Tab = 'dashboard' | 'memories' | 'music' | 'players' | 'mapping' | 'waypoints' | 'vision' | 'health'
 
 const tabs: { id: Tab; label: string; icon: typeof RiDashboardLine }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: RiDashboardLine },
@@ -20,7 +12,16 @@ const tabs: { id: Tab; label: string; icon: typeof RiDashboardLine }[] = [
   { id: 'mapping', label: 'Mapping', icon: TbMap },
   { id: 'waypoints', label: 'Waypoints', icon: TbMapPin },
   { id: 'vision', label: 'Vision', icon: TbEye },
+  { id: 'health', label: 'System Health', icon: RiTimerLine },
 ]
+
+interface NavbarProps {
+  appName: string
+  isConnected: boolean
+  isMuted: boolean
+  activeTab: Tab
+  onTabChange: (tab: Tab) => void
+}
 
 export default function Navbar({ appName, isConnected, isMuted, activeTab, onTabChange }: NavbarProps) {
   return (
