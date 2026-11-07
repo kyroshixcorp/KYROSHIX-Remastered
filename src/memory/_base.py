@@ -82,9 +82,15 @@ class MemorySystemBase:
                 self._score_gemini = val
         self.vector_min_score = self._score_local if self.rag_provider == "local" else self._score_gemini
 
-        # Local RAG config (LM Studio + ChromaDB)
-        self._lm_studio_url = self.config.get("lm_studio_url", "http://localhost:1234")
-        self._local_embedding_model = self.config.get("local_embedding_model", "text-embedding-embeddinggemma-300m-qat")
+        # Local RAG config (Ollama-compatible embeddings + ChromaDB).
+        # Keep legacy LM Studio keys as fallback for existing installations.
+        self._lm_studio_url = self.config.get(
+            "ollama_url", self.config.get("lm_studio_url", "http://127.0.0.1:11434")
+        ).rstrip("/")
+        self._local_embedding_model = self.config.get(
+            "ollama_embedding_model",
+            self.config.get("local_embedding_model", "nomic-embed-text")
+        )
         self._chroma_client = None
         self._chroma_collection = None
         self._chroma_path = self.config.get("chroma_dir", "data/gabriel_chroma_db")

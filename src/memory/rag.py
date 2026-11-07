@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class RAGMixin:
-    """Embedding clients (Gemini + LM Studio) + Mongo/Chroma vector search."""
+    """Embedding clients (Gemini + Ollama-compatible local API) + vector search."""
 
     def _init_rag(self):
         """Initialize RAG system based on provider config."""
@@ -42,7 +42,7 @@ class RAGMixin:
             self.rag_enabled = False
 
     def _init_local_rag(self):
-        """Initialize local RAG with ChromaDB + LM Studio embeddings."""
+        """Initialize local RAG with ChromaDB + Ollama embeddings."""
         if not _import_chromadb():
             logger.warning("ChromaDB not installed, disabling local RAG (pip install chromadb)")
             self.rag_enabled = False
@@ -63,7 +63,7 @@ class RAGMixin:
             )
             self._httpx_client = _httpx.Client(timeout=30)
             logger.debug(
-                f"RAG enabled (local, model={self._local_embedding_model}, "
+                f"RAG enabled (local/Ollama, model={self._local_embedding_model}, "
                 f"db={self._chroma_path}, memories={self._chroma_collection.count()})"
             )
             # auto sync existing memories into chroma on startup
@@ -86,7 +86,7 @@ class RAGMixin:
     # embedding generation (gemini + local)
     # ------------------------------------------------------------------
     def _embed_local(self, text: str) -> Optional[List[float]]:
-        """Generate embedding via LM Studio local server."""
+        """Generate an embedding via Ollama's OpenAI-compatible local endpoint."""
         if self._httpx_client is None:
             return None
         try:
@@ -102,7 +102,7 @@ class RAGMixin:
             return None
 
     def _embed_local_batch(self, texts: List[str], batch_size: int = 32) -> List[Optional[List[float]]]:
-        """Generate embeddings via LM Studio in batches."""
+        """Generate embeddings via Ollama's OpenAI-compatible endpoint."""
         if self._httpx_client is None:
             return [None] * len(texts)
         all_embeddings: List[Optional[List[float]]] = []

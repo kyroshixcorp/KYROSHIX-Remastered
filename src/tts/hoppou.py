@@ -300,3 +300,86 @@ class HoppouTTSProvider:
         except Exception as e:
             logger.error("Audio conversion error: %s", e)
             return None
+
+
+class LocalOpenAITTSProvider(HoppouTTSProvider):
+    """Local OpenAI-compatible TTS server (e.g. a Qwen3-TTS wrapper).
+
+    The server must accept POST /v1/audio/speech/stream and return raw
+    signed 16-bit PCM at 24 kHz when response_format="pcm" is requested.
+    No API key or Authorization header is sent.
+    """
+
+    def __init__(self, config, voice_override=None):
+        super().__init__(config, voice_override=voice_override)
+        self._api_url = config.get(
+            "tts", "local_openai", "base_url", default="http://127.0.0.1:8000"
+        ).rstrip("/")
+        vo = voice_override or {}
+        self._voice = vo.get(
+            "voice", config.get("tts", "local_openai", "voice", default="default")
+        )
+        self._model = vo.get(
+            "model", config.get("tts", "local_openai", "model", default="qwen3-tts")
+        )
+        # Internal non-secret sentinel: parent.start() uses this only as an
+        # enabled flag. _synthesize_async below deliberately sends no auth.
+        self._api_key = "__local_no_auth__"
+
+    async def _synthesize_async(self, text: str, sub_q: asyncio.Queue):
+        if not self._client:
+            sub_q.put_nowait(None)
+            return
+
+        cache_key_text = text.strip()
+        cached = tts_cache.get(
+            "qwen3_local", self._voice, self._model, cache_key_text, self._target_sr
+        )
+        if cached is not None:
+            if not self._interrupted:
+                sub_q.put_nowait(cached)
+            sub_q.put_nowait(None)
+            return
+
+        async with self._synth_semaphore:
+            try:
+                async with self._client.stream(
+                    "POST",
+                    f"{self._api_url}/v1/audio/speech/stream",
+                    headers={"Content-Type": "application/json"},
+                    json={
+                        "model": self._model,
+                        "input": text,
+                        "voice": self._voice,
+                        "response_format": "pcm",
+                    },
+                ) as resp:
+                    resp.raise_for_status()
+                    chunks = []
+                    async for chunk in resp.aiter_bytes(chunk_size=4096):
+                        if self._interrupted or not self._running:
+                            return
+                        if chunk:
+                            chunks.append(chunk)
+                            pcm = self._int16_to_playback(chunk)
+                            if pcm:
+                                sub_q.put_nowait(pcm)
+                    if chunks and not self._interrupted:
+                        full_data = b"".join(chunks)
+                        full_pcm = self._int16_to_playback(full_data)
+                        if full_pcm is not None:
+                            tts_cache.put(
+                                "qwen3_local", self._voice, self._model,
+                                cache_key_text, self._target_sr, full_pcm,
+                            )
+            except httpx.ConnectError:
+                logger.error("Cannot connect to local Qwen3 TTS at %s", self._api_url)
+            except httpx.TimeoutException:
+                logger.error("Local Qwen3 TTS request timed out")
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                if not self._interrupted:
+                    logger.error("Local Qwen3 TTS stream error: %s", e)
+            finally:
+                sub_q.put_nowait(None)

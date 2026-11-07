@@ -1,4 +1,4 @@
-"""LM Studio (OpenAI compatible) streaming client with tool calling + vision.
+"""Ollama / OpenAI-compatible local streaming client with tool calling + vision.
 
 Why not the openai SDK? We already depend on httpx and the protocol is small
 enough that hand-rolling SSE parsing keeps the dependency tree boring and
@@ -91,7 +91,7 @@ class LMStudioClient:
         self.config = config
         self._base_url = config.local_llm_base_url
         self._model = config.local_llm_model
-        self._api_key = config.local_llm_api_key
+        self._api_key = config.local_llm_api_key or ""
         self._temperature = config.local_llm_temperature
         self._top_p = config.local_llm_top_p
         self._max_tokens = config.local_llm_max_tokens
@@ -108,13 +108,15 @@ class LMStudioClient:
 
     async def start(self):
         if self._client is None:
+            headers = {"Content-Type": "application/json"}
+            # Ollama's local OpenAI-compatible endpoint does not require an API key.
+            # Only send Authorization when the operator explicitly configured one.
+            if self._api_key:
+                headers["Authorization"] = f"Bearer {self._api_key}"
             self._client = httpx.AsyncClient(
                 base_url=self._base_url,
                 timeout=httpx.Timeout(self._timeout, read=None),
-                headers={
-                    "Authorization": f"Bearer {self._api_key}",
-                    "Content-Type": "application/json",
-                },
+                headers=headers,
             )
 
     async def stop(self):

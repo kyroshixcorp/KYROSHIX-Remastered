@@ -57,7 +57,8 @@ class Config:
         except Exception as exc:
             logger.warning(f"failed to load config.yml ({exc}); running with safe defaults")
 
-        # Gemini API keys: config.yml first, env override GABRIEL_GEMINI_API_KEY next.
+        # Gemini keys are optional in local mode. Only the Gemini Live backend
+        # and Gemini-powered RAG need credentials; Ollama never does.
         gemini = self._data.get("gemini") or {}
         primary = gemini.get("api_key") or os.environ.get("GABRIEL_GEMINI_API_KEY", "")
         self._keys = [primary] if primary else []
@@ -301,28 +302,28 @@ class Config:
 
     @property
     def backend(self):
-        # which brain runs the show. gemini_live = cloud websocket (default,
-        # the og setup). local = LM Studio + local STT + a configured TTS provider.
-        val = (self.get("backend", default="gemini_live") or "gemini_live").lower()
+        # Local-first default: Ollama + local STT + local TTS. Gemini Live
+        # remains available only when explicitly selected.
+        val = (self.get("backend", default="local") or "local").lower()
         if val not in ("gemini_live", "local"):
-            logger.warning(f"unknown backend '{val}', defaulting to gemini_live")
-            return "gemini_live"
+            logger.warning(f"unknown backend '{val}', defaulting to local")
+            return "local"
         return val
 
-    # local backend (LM Studio + parakeet.cpp) settings
+    # local backend (Ollama OpenAI-compatible API + local STT) settings
     @property
     def local_llm_base_url(self):
-        return self.get("local", "llm", "base_url", default="http://localhost:1234/v1").rstrip("/")
+        return self.get("local", "llm", "base_url", default="http://127.0.0.1:11434/v1").rstrip("/")
 
     @property
     def local_llm_model(self):
-        # whatever model identifier LM Studio shows. usually the file/repo name.
-        return self.get("local", "llm", "model", default="local-model")
+        # Ollama model tag, for example qwen3:14b.
+        return self.get("local", "llm", "model", default="qwen3:14b")
 
     @property
     def local_llm_api_key(self):
-        # LM Studio ignores this but the openai-compat path requires a value
-        return self.get("local", "llm", "api_key", default="lm-studio")
+        # Ollama local endpoints do not require an API key.
+        return self.get("local", "llm", "api_key", default="")
 
     @property
     def local_llm_temperature(self):
@@ -466,13 +467,15 @@ class Config:
 
     @property
     def api_key(self):
-        return self._keys[self._key_index]
+        return self._keys[self._key_index] if self._keys else ""
 
     @property
     def key_count(self):
         return len(self._keys)
 
     def rotate_key(self):
+        if not self._keys:
+            return ""
         old_idx = self._key_index
         self._key_index = (self._key_index + 1) % len(self._keys)
         if self._key_index == old_idx:

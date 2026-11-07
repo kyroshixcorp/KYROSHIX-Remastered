@@ -14,11 +14,12 @@ Providers:
 from ._helpers import _strip_audio_tags, _strip_emojis
 from .cache import tts_cache
 from .chirp3hd import Chirp3HDTTSProvider
-from .hoppou import HoppouTTSProvider
+from .hoppou import HoppouTTSProvider, LocalOpenAITTSProvider
 from .tiktok import TikTokTTSProvider
 
 __all__ = [
     "HoppouTTSProvider",
+    "LocalOpenAITTSProvider",
     "Chirp3HDTTSProvider",
     "TikTokTTSProvider",
     "tts_cache",

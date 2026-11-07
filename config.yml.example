@@ -11,7 +11,7 @@ app_name: "KYROSHIX-Remastered"
 #   local       - LM Studio for the LLM + local STT + a configured TTS provider
 # Local mode can run fully offline with local STT and TTS. Set memory.rag_provider
 # to "local" if enabling RAG; Gemini Live requires a Gemini API key.
-backend: "gemini_live"
+backend: "local"
 
 # Privacy controls. Off by default. See README "Privacy" section.
 privacy:
@@ -31,7 +31,7 @@ logging:
 
 gemini:
   # Primary API key (required) - get from https://aistudio.google.com/apikey
-  api_key: "YOUR_GEMINI_API_KEY_HERE"
+  api_key: ""
 
   # Backup keys for automatic rotation when rate limited (optional)
   # The system will cycle through these when the primary key hits quota limits
@@ -187,31 +187,23 @@ gemini:
     replay_messages: 10
 
 # ══════════════════════════════════════════════════════════
-# Local backend (LM Studio + parakeet.cpp + external TTS)
+# Local backend (Ollama + local STT + local Qwen3 TTS)
 # ══════════════════════════════════════════════════════════
-# Only used when backend: local at the top of this file. Otherwise ignored.
-# NOTE: the parakeet.cpp STT path is brand new and still WIP / being tuned,
-# so expect rough edges and please report anything weird.
+# Only used when backend: local at the top of this file. This is the default.
 # Requirements:
-#   1. LM Studio running with a chat model loaded and server enabled
-#      (Developer tab -> Start Server). default endpoint is the one below.
-#   2. A TTS provider enabled. For fully local speech, install a local TTS
-#      plugin and set tts.provider to its registered name, such as
-#      omnivoice_cpp_tts or omnivoice_tts.
-#   3. Linux uses faster-whisper; its model downloads on first run. Windows
-#      can keep using the bundled parakeet.cpp runtime.
+#   1. Ollama running locally with the configured model pulled.
+#   2. A local Qwen3-TTS-compatible server running; configure its URL below.
+#   3. Linux can use faster-whisper or the local Parakeet runtime.
 local:
   llm:
-    # OpenAI compatible endpoint. LM Studio defaults to localhost:1234.
-    base_url: "http://localhost:1234/v1"
-    # Model identifier as shown in LM Studio. The default placeholder works
-    # because LM Studio routes to whatever is loaded, but be explicit when
-    # you can.
-    model: "local-model"
-    api_key: "lm-studio"
+    # Ollama OpenAI-compatible endpoint. No API key is required.
+    base_url: "http://127.0.0.1:11434/v1"
+    # Pull with: ollama pull qwen3:14b
+    model: "qwen3:14b"
+    api_key: ""
     temperature: 0.8
     top_p: 0.95
-    max_tokens: 1024
+    max_tokens: 2048
     # Rolling chat history kept in context across turns. Higher = more
     # memory but more tokens per request.
     history_messages: 30
@@ -242,7 +234,7 @@ local:
 
   vision:
     # When true, captures the screen and attaches an image to every user
-    # turn. Requires a multimodal model loaded in LM Studio (eg qwen2.5-vl).
+    # turn. Requires a multimodal Ollama model (eg qwen3-vl:8b) in local.llm.model.
     enabled: false
     # Longest edge of the resized image. Smaller = faster, fewer tokens.
     max_size: 768
@@ -315,18 +307,26 @@ local:
 # TTS Provider
 # ══════════════════════════════════════════════════════════
 # Choose which voice to use for AI speech output.
-# "gemini"    = use Gemini Live's native audio (default)
+# "qwen3_local" = local Qwen3-TTS-compatible server (no API key)
+# "gemini"    = use Gemini Live's native audio
 # "hoppou"    = discard Gemini audio, use Hoppou AI cloud TTS
 # "chirp3_hd" = discard Gemini audio, use Google Cloud Chirp 3: HD streaming TTS
 # "tiktok"    = discard Gemini audio, use TikTok's TTS API (free, no API key needed)
 # Plugins can register their own providers too. Set provider to the name
 # registered by the plugin, such as "omnivoice_cpp_tts" or "omnivoice_tts".
 tts:
-  provider: "gemini"
+  provider: "qwen3_local"
+
+  # Local Qwen3-TTS wrapper must expose POST /v1/audio/speech/stream
+  # and return raw int16 PCM at 24 kHz for response_format=pcm.
+  local_openai:
+    base_url: "http://127.0.0.1:8000"
+    model: "qwen3-tts"
+    voice: "default"
 
   # Providers the AI can switch to at runtime via the switchTTSProvider tool.
   # Must be a list of provider names: "gemini", "hoppou", "chirp3_hd", "tiktok"
-  switchable_providers: ["gemini"]
+  switchable_providers: ["qwen3_local"]
 
   # Hoppou AI cloud TTS settings (only used when provider is "hoppou")
   hoppou:
@@ -686,12 +686,10 @@ memory:
 
   # RAG System (semantic memory recall via embeddings + vector search)
   # When disabled, uses legacy keyword recall.
-  rag_enabled: false
+  rag_enabled: true
 
-  # RAG provider: "gemini" (cloud, requires MongoDB) or "local" (ChromaDB + LM Studio)
-  # "gemini" - uses Gemini embedding API + MongoDB Atlas vector search
-  # "local"  - uses local embedding model via LM Studio + ChromaDB vector DB (no cloud needed)
-  rag_provider: "gemini"
+  # RAG provider: "gemini" (cloud) or "local" (Ollama embeddings + ChromaDB)
+  rag_provider: "local"
 
   # -- Gemini RAG settings (rag_provider: "gemini") --
   # Requires MongoDB backend. Gemini embedding API has 100 RPM limit on free tier.
@@ -699,11 +697,10 @@ memory:
   embedding_dims: 768                       # Output dimensions (lower = faster, max 3072)
 
   # -- Local RAG settings (rag_provider: "local") --
-  # Requires LM Studio running with an embedding model loaded.
-  # Works with any backend (sqlite or mongo).
-  # See README for setup instructions.
-  lm_studio_url: "http://localhost:1234"          # LM Studio server URL
-  local_embedding_model: "text-embedding-embeddinggemma-300m-qat"  # Model loaded in LM Studio
+  # Requires Ollama and: ollama pull nomic-embed-text
+  # Works with SQLite or MongoDB primary storage.
+  ollama_url: "http://127.0.0.1:11434"
+  ollama_embedding_model: "nomic-embed-text"
   chroma_dir: "data/gabriel_chroma_db"                 # ChromaDB storage directory
 
   # Vector similarity thresholds (per-provider, since local models score lower)

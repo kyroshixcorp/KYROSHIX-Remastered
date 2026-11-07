@@ -367,6 +367,14 @@ async def main(save_audio=False):
             logger.info("Using TikTok TTS provider (Gemini audio will be discarded)")
         except Exception as e:
             logger.error(f"TikTok TTS provider failed to start: {e}")
+    elif config.tts_provider == "qwen3_local":
+        try:
+            from src.tts import LocalOpenAITTSProvider
+            tts_provider = LocalOpenAITTSProvider(config)
+            tts_provider.start()
+            logger.info("Using local Qwen3 TTS provider (no API key)")
+        except Exception as e:
+            logger.error(f"Local Qwen3 TTS provider failed to start: {e}")
     else:
         # plugin provider. set tts.provider to the name directly, old external_provider still works as fallback
         ext_name = config.tts_provider
@@ -397,7 +405,7 @@ async def main(save_audio=False):
             )
             raise SystemExit(2)
         from src.local_live import LocalLiveSession
-        logger.info("backend = local (LM Studio + parakeet.cpp)")
+        logger.info("backend = local (Ollama + local STT + local TTS)")
         session = LocalLiveSession(config, audio, osc, tracker, personality, tts_provider)
     else:
         logger.info("backend = gemini_live")
