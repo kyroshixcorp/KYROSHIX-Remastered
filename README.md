@@ -18,13 +18,15 @@ Bot de VRChat com memória persistente, inteligência avançada, GPU AMD RX 7900
 
 ## Perfil 100% Local AI — Ollama
 
-A branch `experimental/ollama-local-ai` prepara o bot para usar Ollama como backend padrão, sem API keys de IA. O perfil usa LLM local, STT local, TTS local compatível com Qwen3-TTS e embeddings locais para memória semântica.
+A branch `experimental/ollama-local-ai` prepara o bot para usar Ollama como backend padrão, sem API keys de IA. O perfil usa LLM local, STT local, TTS local compatível com Qwen3-TTS e embeddings locais para memória semântica. No cenário Hyper-V sem passthrough, o Ollama roda no Windows 11 com a RX 7900 XTX, enquanto o PyTorch do guest Linux usa wheels CPU.
 
-Consulte o guia completo: [docs/OLLAMA-LOCAL-AI.md](docs/OLLAMA-LOCAL-AI.md).
+Consulte o guia completo: [docs/OLLAMA-LOCAL-AI.md](docs/OLLAMA-LOCAL-AI.md). Para Linux Mint em VM Hyper-V sem passthrough, com Ollama acelerado pela RX 7900 XTX no Windows 11 host, siga [docs/HYPERV-OLLAMA-HOST.md](docs/HYPERV-OLLAMA-HOST.md). Para Ubuntu 24.04 no WSL2 com PyTorch ROCm 7.2 e RX 7900 XTX, siga [docs/WSL2-ROCM-RX7900XTX.md](docs/WSL2-ROCM-RX7900XTX.md) e execute `scripts/install-wsl-rocm.sh` dentro do Ubuntu.
+
+Para implantação em VM Linux Mint no Windows 11, diagnóstico da GPU AMD, limites de passthrough e integração OSC com VRChat no host, consulte [docs/LINUX-MINT-VM-SETUP.md](docs/LINUX-MINT-VM-SETUP.md). Diagnóstico somente leitura: `scripts/diagnose-linux-vm.sh`.
 
 Modelos de exemplo:
 ```bash
-ollama pull qwen3:14b
+ollama pull qwen3:8b
 ollama pull nomic-embed-text
 ```
 
@@ -70,7 +72,7 @@ Na branch `experimental/ollama-local-ai`, o backend local é o padrão. Não con
 
 Baixe os modelos locais:
 ```bash
-ollama pull qwen3:14b
+ollama pull qwen3:8b
 ollama pull nomic-embed-text
 ```
 
@@ -79,15 +81,15 @@ Use os parâmetros de `config.yml.example` desta branch:
 backend: "local"
 local:
   llm:
-    base_url: "http://127.0.0.1:11434/v1"
-    model: "qwen3:14b"
+    base_url: "http://<WINDOWS_HOST_IP>:11434/v1"
+    model: "qwen3:8b"
     api_key: ""
 tts:
   provider: "qwen3_local"
 memory:
   rag_enabled: true
   rag_provider: "local"
-  ollama_url: "http://127.0.0.1:11434"
+  ollama_url: "http://<WINDOWS_HOST_IP>:11434"
   ollama_embedding_model: "nomic-embed-text"
 ```
 

@@ -196,10 +196,11 @@ gemini:
 #   3. Linux can use faster-whisper or the local Parakeet runtime.
 local:
   llm:
-    # Ollama OpenAI-compatible endpoint. No API key is required.
-    base_url: "http://127.0.0.1:11434/v1"
-    # Pull with: ollama pull qwen3:14b
-    model: "qwen3:14b"
+    # Ollama on the Windows 11 host. For Hyper-V NAT or WSL2 NAT, replace with the host/gateway IPv4 found via `ip route` in the Linux guest.
+    # Example only: http://172.28.224.1:11434/v1
+    base_url: "http://<WINDOWS_HOST_IP>:11434/v1"
+    # Pull with: ollama pull qwen3:8b
+    model: "qwen3:8b"
     api_key: ""
     temperature: 0.8
     top_p: 0.95
@@ -699,7 +700,8 @@ memory:
   # -- Local RAG settings (rag_provider: "local") --
   # Requires Ollama and: ollama pull nomic-embed-text
   # Works with SQLite or MongoDB primary storage.
-  ollama_url: "http://127.0.0.1:11434"
+  # Windows 11 host running Ollama; use the same host IP as local.llm.base_url.
+  ollama_url: "http://<WINDOWS_HOST_IP>:11434"
   ollama_embedding_model: "nomic-embed-text"
   chroma_dir: "data/gabriel_chroma_db"                 # ChromaDB storage directory
 
