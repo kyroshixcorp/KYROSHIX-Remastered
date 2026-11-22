@@ -1,5 +1,5 @@
 @echo off
-title ProjectGabriel - Memory Migration
+title KYROSHIX BOT - Memory Migration
 cd /d "%~dp0"
 if exist ".venv\Scripts\python.exe" (
     .venv\Scripts\python.exe scripts\migrate_memories.py
